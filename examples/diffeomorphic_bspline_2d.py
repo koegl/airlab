@@ -23,55 +23,40 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import torch as th
 import numpy as np
-from scipy.ndimage import map_coordinates
+from PIL import Image
+import myutils as mu
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # nopep8
 
 import airlab as al
 
 
-def deform_landmarks(moving_landmarks: np.ndarray, displacement: np.ndarray) -> np.ndarray:
-    # Map the moving landmarks to the fixed landmarks using the displacement field
-    mov_lms_disp_x = map_coordinates(
-        displacement[:, :, 0], moving_landmarks.transpose())
-    mov_lms_disp_y = map_coordinates(
-        displacement[:, :, 1], moving_landmarks.transpose())
-    mov_lms_disp = np.array(
-        (mov_lms_disp_x, mov_lms_disp_y)).transpose()
-    return moving_landmarks + mov_lms_disp
+def _get_image_pair(path_fixed: Path, path_moving: Path, dtype, device):
 
+    # load the images
+    image_fixed = np.array(Image.open(
+        path_fixed).convert('L').resize((256, 256)))
+    image_moving = np.array(Image.open(
+        path_moving).convert('L').resize((256, 256)))
 
-def tre(landmarks_fixed: np.ndarray,
-        landmarks_moving: np.ndarray,
-        displacement: np.ndarray,
-        spacing_moving: list[float],
-        percentile: Optional[float] = None) -> float:
-    """
-    Calculate the Target Registration Error (TRE) between two sets of landmarks.
+    # min max normalization 0-1
+    image_fixed = (image_fixed - np.min(image_fixed)) / \
+        (np.max(image_fixed) - np.min(image_fixed))
+    image_moving = (image_moving - np.min(image_moving)) / \
+        (np.max(image_moving) - np.min(image_moving))
 
-    Args:
-        landmarks_fixed (np.ndarray): The fixed landmarks. landmarks in shape (N,3)
-        landmarks_moving (np.ndarray): The moving landmarks. landmarks in shape (N,3)
-        displacement (np.ndarray): The displacement field. displacement in shape (h,w,d,[1], 3)
-        spacing_moving (Tuple[float, float, float]): The spacing of the moving image.
+    image_fixed = al.utils.image_from_numpy(
+        image_fixed, [1, 1], [0, 0], dtype=dtype, device=device)
+    image_moving = al.utils.image_from_numpy(
+        image_moving, [1, 1], [0, 0], dtype=dtype, device=device)
 
-    Returns:
-        float: The mean TRE.
-    """
-
-    assert landmarks_moving.shape == landmarks_fixed.shape
-    assert landmarks_fixed.shape[-1] == 2
-
-    mov_lms_warped = deform_landmarks(landmarks_moving, displacement)
-
-    # Calculate the TRE
-    all_errors = np.linalg.norm((mov_lms_warped - landmarks_fixed)
-                                * spacing_moving, axis=1)
-
-    return all_errors
+    return image_fixed, image_moving
 
 
 def main():
+
+    file_index = -1
+
     start = time.time()
 
     # set the used data type
@@ -93,8 +78,13 @@ def main():
                                                device=device,
                                                output_type="keypoints")
 
-    fixed_image, moving_image = loader[0]
-    points_fixed, points_moving = laoder_points[0]
+    fixed_image, moving_image = loader[file_index]
+    points_fixed, points_moving = laoder_points[file_index]
+
+    fixed_image, moving_image = _get_image_pair("/home/fryderyk/Downloads/archive/trainingSample/img_5.jpg",
+                                                "/home/fryderyk/Downloads/archive/trainingSample/img_1.jpg",
+                                                dtype,
+                                                device)
 
     # create image pyramide size/4, size/2, size/1
     fixed_image_pyramid = al.create_image_pyramid(
@@ -102,11 +92,12 @@ def main():
     moving_image_pyramid = al.create_image_pyramid(
         moving_image, [[4, 4], [2, 2]])
 
-    regularisation_weight = [1, 5, 50]
-    number_of_iterations = [75, 50, 25]
+    regularisation_weight = [10, 50, 500]
+    number_of_iterations = [500, 300, 150]
     # number_of_iterations = [1, 1, 1]
 
-    sigma = [[11, 11], [11, 11], [3, 3]]
+    sigma = [[20, 20], [12, 12], [4, 4]]
+    # sigma = [[20, 20], [12, 12], [4, 4]]
 
     once = True
 
@@ -117,16 +108,16 @@ def main():
         # define the transformation
         transformation = al.transformation.pairwise.BsplineTransformation(mov_im_level.size,
                                                                           sigma=sigma[level],
-                                                                          order=3,
+                                                                          order=1,
                                                                           dtype=dtype,
                                                                           device=device,
                                                                           diffeomorphic=True)
 
-        if once:
-            once = False
-            displacement_once = transformation.get_displacement().detach().numpy().squeeze()
-            tre_before = tre(points_fixed, points_moving,
-                             displacement_once, [1, 1])
+        # if once:
+        #     once = False
+        #     displacement_once = transformation.get_displacement().detach().numpy().squeeze()
+        #     tre_before = mu.tre(points_fixed, points_moving,
+        #                         displacement_once, [1, 1])
 
         if level > 0:
             constant_flow = al.transformation.utils.upsample_displacement(constant_flow,
@@ -172,23 +163,32 @@ def main():
 
     new_disp = transformation.get_displacement().detach().numpy().squeeze()
 
-    tre_after = tre(points_fixed,
-                    points_moving,
-                    new_disp,
-                    [1, 1])
+    # tre_after = mu.tre(points_fixed,
+    #                    points_moving,
+    #                    new_disp,
+    #                    [1, 1])
 
     # print(
     #     f"TRE before:\t\tmin: {tre_before.min():.4f}\tmax: {tre_before.max():.4f}\tmean: {tre_before.mean():.4f}")
     # print(
     #     f"TRE after:\t\tmin: {tre_after.min():.4f}\tmax: {tre_after.max():.4f}\tmean: {tre_after.mean():.4f}")
-    improvement_min = (tre_before.mean() - tre_after.mean()
-                       ) / tre_before.mean() * 100
-    improvement_max = (tre_before.max() - tre_after.max()) / \
-        tre_before.max() * 100
-    improvement_mean = (tre_before.mean() - tre_after.mean()
-                        ) / tre_before.mean() * 100
-    print(
-        f"TRE improvements:\tmin: {improvement_min:.4f}%\tmax: {improvement_max:.4f}%\tmean: {improvement_mean:.4f}%")
+    # improvement_min = (tre_before.mean() - tre_after.mean()
+    #                    ) / tre_before.mean() * 100
+    # improvement_max = (tre_before.max() - tre_after.max()) / \
+    #     tre_before.max() * 100
+    # improvement_mean = (tre_before.mean() - tre_after.mean()
+    #                     ) / tre_before.mean() * 100
+    # print(
+    #     f"TRE improvements:\tmin: {improvement_min:.4f}%\tmax: {improvement_max:.4f}%\tmean: {improvement_mean:.4f}%")
+
+    # mu.plot_all_registration_results("/home/fryderyk/Documents/fig.jpg",
+    #                                  moving_image.numpy(),
+    #                                  fixed_image.numpy(),
+    #                                  warped_image.numpy(),
+    #                                  new_disp,
+    #                                  moving_keypoints=points_moving,
+    #                                  fixed_keypoints=points_fixed,
+    #                                  pred_keypoints=mu.deform_landmarks(points_moving, new_disp))
 
     # plot the results
     plt.subplot(231)
@@ -200,7 +200,8 @@ def main():
     plt.title('Warped Moving Image')
 
     plt.subplot(233)
-    plt.imshow(fixed_image.numpy() - moving_image.numpy(), cmap='gray')
+    plt.imshow(fixed_image.numpy() - moving_image.numpy(),
+               cmap='gray', vmin=-0.5, vmax=0.5)
     plt.title('Difference Fixed - Moving')
 
     plt.subplot(234)
@@ -213,7 +214,8 @@ def main():
 
     # plot the results
     plt.subplot(236)
-    plt.imshow(fixed_image.numpy() - warped_image.numpy(), cmap='gray')
+    plt.imshow(fixed_image.numpy() - warped_image.numpy(),
+               cmap='gray', vmin=-0.5, vmax=0.5)
     plt.title('Difference Fixed - Warped')
 
     plt.show()
