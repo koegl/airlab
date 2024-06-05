@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from typing import List, Tuple, Union
+from typing import List, Tuple
 
 import numpy as np
 from PIL import Image
@@ -38,7 +38,7 @@ class Fire():
         """
 
         if self.output_type == "images":
-            return len(self.list_of_image_pairs)
+            return len(self.list_of_image_pair_paths)
         else:
             return len(self.list_of_keypoint_paths)
 
@@ -97,10 +97,10 @@ class Fire():
         coords_moving = data[:, [2, 3]]
 
         # Scale the coordinates
-        # coords_fixed[:, 0] *= scale_x
-        # coords_fixed[:, 1] *= scale_y
-        # coords_moving[:, 0] *= scale_x
-        # coords_moving[:, 1] *= scale_y
+        coords_fixed[:, 0] *= scale_x
+        coords_fixed[:, 1] *= scale_y
+        coords_moving[:, 0] *= scale_x
+        coords_moving[:, 1] *= scale_y
 
         return coords_fixed, coords_moving
 
