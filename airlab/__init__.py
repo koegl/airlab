@@ -14,6 +14,7 @@
 
 from .utils import *
 import airlab.transformation
+import airlab.dino
 import airlab.loss
 import airlab.dataloading
 from .registration import *

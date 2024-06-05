@@ -17,6 +17,7 @@ import sys
 import os
 import time
 from pathlib import Path
+import warnings
 
 from typing import Optional
 
@@ -30,14 +31,41 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 
 
 import airlab as al
 
+import warnings
+warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore", category=UserWarning)
+sys.stderr = open(os.devnull, 'w')
+
 
 def _get_image_pair(path_fixed: Path, path_moving: Path, dtype, device):
 
     # load the images
     image_fixed = np.array(Image.open(
-        path_fixed).convert('L').resize((256, 256)))
+        path_fixed).convert('L').resize((392, 392)))
     image_moving = np.array(Image.open(
-        path_moving).convert('L').resize((256, 256)))
+        path_moving).convert('L').resize((392, 392)))
+
+    # min max normalization 0-1
+    image_fixed = (image_fixed - np.min(image_fixed)) / \
+        (np.max(image_fixed) - np.min(image_fixed))
+    image_moving = (image_moving - np.min(image_moving)) / \
+        (np.max(image_moving) - np.min(image_moving))
+
+    image_fixed = al.utils.image_from_numpy(
+        image_fixed, [1, 1], [0, 0], dtype=dtype, device=device)
+    image_moving = al.utils.image_from_numpy(
+        image_moving, [1, 1], [0, 0], dtype=dtype, device=device)
+
+    return image_fixed, image_moving
+
+
+def _get_image_pair_np(path_fixed: Path, path_moving: Path, dtype, device):
+
+    # load the images
+    image_fixed = np.array(
+        Image.fromarray(np.load(path_fixed)).resize((392, 392)))
+    image_moving = np.array(
+        Image.fromarray(np.load(path_moving)).resize((392, 392)))
 
     # min max normalization 0-1
     image_fixed = (image_fixed - np.min(image_fixed)) / \
@@ -75,9 +103,9 @@ def main():
                                         output_type="images")
 
     laoder_points = al.dataloading.loader.Fire(path_base=Path("/home/fryderyk/Documents/data/FIRE"),
-                                               dtype=dtype,
-                                               device=device,
-                                               output_type="keypoints")
+                                            dtype=dtype,
+                                            device=device,
+                                            output_type="keypoints")
 
     fixed_image, moving_image = loader[file_index]
     points_fixed, points_moving = laoder_points[file_index]
@@ -88,6 +116,11 @@ def main():
                                                 dtype,
                                                 device)
 
+    # fixed_image, moving_image = _get_image_pair_np("/u/home/koeglf/Documents/code/airlab/tmp/fixed.npy",
+    #                                                "/u/home/koeglf/Documents/code/airlab/tmp/moving.npy",
+    #                                                dtype,
+    #                                                device)
+
     # create image pyramide size/4, size/2, size/1
     fixed_image_pyramid = al.create_image_pyramid(
         fixed_image, [[4, 4], [2, 2]])
@@ -95,14 +128,13 @@ def main():
         moving_image, [[4, 4], [2, 2]])
 
     regularisation_weight = [10, 50, 500]
-    number_of_iterations = [500, 300, 150]
+    number_of_iterations = list(np.array([4, 2, 1]) * 32)
     # number_of_iterations = [1, 1, 1]
 
     sigma = [[20, 20], [12, 12], [4, 4]]
     # sigma = [[20, 20], [12, 12], [4, 4]]
 
-    once = True
-
+    model = al.dino.utils_dino.get_model()
     for level, (mov_im_level, fix_im_level) in enumerate(zip(moving_image_pyramid, fixed_image_pyramid)):
 
         registration = al.PairwiseRegistration(verbose=True)
@@ -124,7 +156,11 @@ def main():
         registration.set_transformation(transformation)
 
         # choose the Mean Squared Error as image loss
-        image_loss = al.loss.pairwise.MSE(fix_im_level, mov_im_level)
+        # image_loss = al.loss.pairwise.MSE(fix_im_level, mov_im_level)
+        image_loss = al.loss.pairwise.Dino(fix_im_level,
+                                           mov_im_level,
+                                           model,
+                                           dimensions=1)
 
         registration.set_image_loss([image_loss])
 
@@ -222,4 +258,5 @@ def main():
 
 
 if __name__ == '__main__':
+
     main()

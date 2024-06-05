@@ -11,18 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+import sys
 
 import torch as th
 import torch.nn.functional as F
+from torchvision import transforms
 
 import numpy as np
 
 from .. import transformation as T
 from ..transformation import utils as tu
 from ..utils import kernelFunction as utils
-
+from ..dino import utils_dino, utils_feature_reduction, utils_visualisation
+import matplotlib.pyplot as plt
 
 # Loss base class (standard from PyTorch)
+
+import warnings
+warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore", category=UserWarning)
+sys.stderr = open(os.devnull, 'w')
+
+
 class _PairwiseImageLoss(th.nn.modules.Module):
     def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None, size_average=True, reduce=True):
         super(_PairwiseImageLoss, self).__init__()
@@ -103,6 +114,121 @@ class _PairwiseImageLoss(th.nn.modules.Module):
             return tensor.sum()*self._weight
         if not self.reduce:
             return tensor*self._weight
+
+
+class Dino(_PairwiseImageLoss):
+    def __init__(self, fixed_image, moving_image, model, dimensions, transform=None, fixed_mask=None, moving_mask=None, size_average=True, reduce=True):
+        super(Dino, self).__init__(fixed_image, moving_image,
+                                   fixed_mask, moving_mask, size_average, reduce)
+
+        self.model = model
+        self.dimensions = dimensions
+
+        self._name = "dino"
+
+        self.warped_moving_image = None
+
+        if transform is None:
+            self.transform = transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean=0.5, std=0.2)
+            ])
+        else:
+            self.transform = transform
+
+    def forward(self, displacement):
+
+        # compute displacement field
+        displacement = self._grid + displacement
+
+        # compute current mask
+        mask = super(Dino, self).GetCurrentMask(displacement)
+
+        # warp moving image with dispalcement field
+        self.warped_moving_image = F.grid_sample(
+            self._moving_image.image, displacement).squeeze()
+
+        # value = th.sqrt(F.mse_loss(
+        #     self.warped_moving_image, self._fixed_image.image))
+
+        # # MSE
+        # value_MSE = (self.warped_moving_image - self._fixed_image.image).pow(2)
+
+        # # mask values
+
+        # final_MSE = self.return_loss(value_MSE)
+
+        # DINO STUFF
+
+        encoded_image_fixed = utils_dino.prepare_input_2d_rgb(self._fixed_image.numpy(),
+                                                              self.model.patch_size)
+        encoded_image_warped = utils_dino.prepare_input_2d_rgb(self.warped_moving_image.detach().cpu().numpy(),
+                                                               self.model.patch_size)
+
+        features_fixed = utils_dino.run_dino_inference(self.model,
+                                                       self.transform,
+                                                       encoded_image_fixed)
+        features_moving = utils_dino.run_dino_inference(self.model,
+                                                        self.transform,
+                                                        encoded_image_warped)
+
+        features_extracted_fixed = utils_feature_reduction.get_dimensionality_reduction_features(features_fixed,
+                                                                                                 self.dimensions,
+                                                                                                 **{"method": utils_feature_reduction.DimensionalityReductionType.PCA})
+        features_extracted_moving = utils_feature_reduction.get_dimensionality_reduction_features(features_moving,
+                                                                                                  self.dimensions,
+                                                                                                  **{"method": utils_feature_reduction.DimensionalityReductionType.PCA})
+
+        for i in range(self.dimensions):
+            features_extracted_fixed[:, i] = utils_visualisation.min_max_normalization(
+                features_extracted_fixed[:, i])
+            features_extracted_moving[:, i] = utils_visualisation.min_max_normalization(
+                features_extracted_moving[:, i])
+
+        # compute squared differences
+        # move to gpu
+        features_extracted_fixed = th.from_numpy(
+            features_extracted_fixed).to(self._device)
+        features_extracted_moving = th.from_numpy(
+            features_extracted_moving).to(self._device)
+
+        value = (features_extracted_fixed - features_extracted_moving).pow(2)
+
+        patch_h = self._fixed_image.size[0] // self.model.patch_size
+        patch_w = self._fixed_image.size[1] // self.model.patch_size
+
+        # utils_visualisation.show_two_feature_maps((self._fixed_image.numpy(), features_extracted_fixed.detach().cpu().numpy()),
+        #                                           (self.warped_moving_image.detach().cpu().numpy(),
+        #                                            features_extracted_moving.detach().cpu().numpy()),
+        #                                           patch_h,
+        #                                           patch_w,
+        #                                           utils_feature_reduction.DimensionalityReductionType.PCA,
+        #                                           "dino",
+        #                                           save=True)
+
+        """
+        value = value.reshape(patch_h, patch_w, -1)
+
+        # Reshape to (1, dim, patch_h, patch_w) for interpolation
+        value = value.permute(2, 0, 1).unsqueeze(0)
+
+        # upscale value to the image size
+        new_shape = (self._fixed_image.size[0], self._fixed_image.size[1])
+        upscaled_tensor = F.interpolate(
+            value, size=new_shape, mode='bilinear', align_corners=False)
+        value = upscaled_tensor.squeeze(0).permute(1, 2, 0)
+
+        # Broadcast the mask to match the shape of upscaled_tensor
+        broadcasted_mask = mask.squeeze().unsqueeze(-1).expand(-1, -1, value.size(2))
+
+        # mask values
+        value = th.masked_select(value, broadcasted_mask)
+        """
+
+        return value.mean() * self._weight
+
+        # return self.return_loss(value)
+        # return value.mean()*self._weight
 
 
 class MSE(_PairwiseImageLoss):
@@ -249,15 +375,15 @@ class MI(_PairwiseImageLoss):
         self._bins_moving_image = th.linspace(self._background_moving, self._max_m, self.bins,
                                               device=fixed_image.device, dtype=fixed_image.dtype).unsqueeze(1)
 
-    @property
+    @ property
     def sigma(self):
         return self._sigma
 
-    @property
+    @ property
     def bins(self):
         return self._bins
 
-    @property
+    @ property
     def bins_fixed_image(self):
         return self._bins_fixed_image
 
@@ -383,9 +509,9 @@ class NGF(_PairwiseImageLoss):
     def _ngf_loss_2d(self, warped_image):
 
         dx = (warped_image[..., 1:, 1:] - warped_image[...,
-              :-1, 1:]) * self._moving_image.spacing[0]
+                                                       :-1, 1:]) * self._moving_image.spacing[0]
         dy = (warped_image[..., 1:, 1:] - warped_image[...,
-              1:, :-1]) * self._moving_image.spacing[1]
+                                                       1:, :-1]) * self._moving_image.spacing[1]
 
         norm = th.sqrt(dx.pow(2) + dy.pow(2) + self._epsilon ** 2)
 
@@ -394,11 +520,11 @@ class NGF(_PairwiseImageLoss):
     def _ngf_loss_3d(self, warped_image):
 
         dx = (warped_image[..., 1:, 1:, 1:] - warped_image[...,
-              :-1, 1:, 1:]) * self._moving_image.spacing[0]
+                                                           :-1, 1:, 1:]) * self._moving_image.spacing[0]
         dy = (warped_image[..., 1:, 1:, 1:] - warped_image[...,
-              1:, :-1, 1:]) * self._moving_image.spacing[1]
+                                                           1:, :-1, 1:]) * self._moving_image.spacing[1]
         dz = (warped_image[..., 1:, 1:, 1:] - warped_image[...,
-              1:, 1:, :-1]) * self._moving_image.spacing[2]
+                                                           1:, 1:, :-1]) * self._moving_image.spacing[2]
 
         norm = th.sqrt(dx.pow(2) + dy.pow(2) + dz.pow(2) + self._epsilon ** 2)
 
