@@ -16,134 +16,210 @@
 import sys
 import os
 import time
+from pathlib import Path
+
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import torch as th
+import numpy as np
+from PIL import Image
+import myutils as mu
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # nopep8
 
 import airlab as al
 
-from create_test_image_data import create_C_2_O_test_images
+
+def _get_image_pair(path_fixed: Path, path_moving: Path, dtype, device):
+
+    # load the images
+    image_fixed = np.array(Image.open(
+        path_fixed).convert('L').resize((256, 256)))
+    image_moving = np.array(Image.open(
+        path_moving).convert('L').resize((256, 256)))
+
+    # min max normalization 0-1
+    image_fixed = (image_fixed - np.min(image_fixed)) / \
+        (np.max(image_fixed) - np.min(image_fixed))
+    image_moving = (image_moving - np.min(image_moving)) / \
+        (np.max(image_moving) - np.min(image_moving))
+
+    image_fixed = al.utils.image_from_numpy(
+        image_fixed, [1, 1], [0, 0], dtype=dtype, device=device)
+    image_moving = al.utils.image_from_numpy(
+        image_moving, [1, 1], [0, 0], dtype=dtype, device=device)
+
+    return image_fixed, image_moving
+
 
 def main():
-	start = time.time()
 
-	# set the used data type
-	dtype = th.float32
-	# set the device for the computaion to CPU
-	device = th.device("cpu")
+    file_index = -1
 
-	# In order to use a GPU uncomment the following line. The number is the device index of the used GPU
-	# Here, the GPU with the index 0 is used.
-	# device = th.device("cuda:0")
+    start = time.time()
 
-	# create test image data
-	fixed_image, moving_image, shaded_image = create_C_2_O_test_images(256, dtype=dtype, device=device)
+    # set the used data type
+    dtype = th.float32
+    # set the device for the computaion to CPU
+    device = th.device("cpu")
 
-	# create image pyramide size/4, size/2, size/1
-	fixed_image_pyramid = al.create_image_pyramid(fixed_image, [[4, 4], [2, 2]])
-	moving_image_pyramid = al.create_image_pyramid(moving_image, [[4, 4], [2, 2]])
+    # In order to use a GPU uncomment the following line. The number is the device index of the used GPU
+    # Here, the GPU with the index 0 is used.
+    device = th.device("cuda:0")
 
-	constant_displacement = None
-	regularisation_weight = [1, 5, 50]
-	number_of_iterations = [500, 500, 500]
-	sigma = [[11, 11], [11, 11], [3, 3]]
+    """
+    loader = al.dataloading.loader.Fire(path_base=Path("/home/fryderyk/Documents/data/FIRE"),
+                                        dtype=dtype,
+                                        device=device,
+                                        output_type="images")
 
-	for level, (mov_im_level, fix_im_level) in enumerate(zip(moving_image_pyramid, fixed_image_pyramid)):
+    laoder_points = al.dataloading.loader.Fire(path_base=Path("/home/fryderyk/Documents/data/FIRE"),
+                                               dtype=dtype,
+                                               device=device,
+                                               output_type="keypoints")
 
-		registration = al.PairwiseRegistration(verbose=True)
+    fixed_image, moving_image = loader[file_index]
+    points_fixed, points_moving = laoder_points[file_index]
+    """
 
-		# define the transformation
-		transformation = al.transformation.pairwise.BsplineTransformation(mov_im_level.size,
-																		  sigma=sigma[level],
-																		  order=3,
-																		  dtype=dtype,
-																		  device=device,
-																		  diffeomorphic=True)
+    fixed_image, moving_image = _get_image_pair("/data/mnist/trainingSample/img_5.jpg",
+                                                "/data/mnist/trainingSample/img_1.jpg",
+                                                dtype,
+                                                device)
 
-		if level > 0:
-			constant_flow = al.transformation.utils.upsample_displacement(constant_flow,
-																				  mov_im_level.size,
-																				  interpolation="linear")
-			transformation.set_constant_flow(constant_flow)
+    # create image pyramide size/4, size/2, size/1
+    fixed_image_pyramid = al.create_image_pyramid(
+        fixed_image, [[4, 4], [2, 2]])
+    moving_image_pyramid = al.create_image_pyramid(
+        moving_image, [[4, 4], [2, 2]])
 
-		registration.set_transformation(transformation)
+    regularisation_weight = [10, 50, 500]
+    number_of_iterations = [500, 300, 150]
+    # number_of_iterations = [1, 1, 1]
 
-		# choose the Mean Squared Error as image loss
-		image_loss = al.loss.pairwise.MSE(fix_im_level, mov_im_level)
+    sigma = [[20, 20], [12, 12], [4, 4]]
+    # sigma = [[20, 20], [12, 12], [4, 4]]
 
-		registration.set_image_loss([image_loss])
+    once = True
 
-		# define the regulariser for the displacement
-		regulariser = al.regulariser.displacement.DiffusionRegulariser(mov_im_level.spacing)
-		regulariser.SetWeight(regularisation_weight[level])
+    for level, (mov_im_level, fix_im_level) in enumerate(zip(moving_image_pyramid, fixed_image_pyramid)):
 
-		registration.set_regulariser_displacement([regulariser])
+        registration = al.PairwiseRegistration(verbose=True)
 
-		#define the optimizer
-		optimizer = th.optim.Adam(transformation.parameters())
+        # define the transformation
+        transformation = al.transformation.pairwise.BsplineTransformation(mov_im_level.size,
+                                                                          sigma=sigma[level],
+                                                                          order=1,
+                                                                          dtype=dtype,
+                                                                          device=device,
+                                                                          diffeomorphic=True)
 
-		registration.set_optimizer(optimizer)
-		registration.set_number_of_iterations(number_of_iterations[level])
+        if level > 0:
+            constant_flow = al.transformation.utils.upsample_displacement(constant_flow,
+                                                                          mov_im_level.size,
+                                                                          interpolation="linear")
+            transformation.set_constant_flow(constant_flow)
 
-		registration.start()
+        registration.set_transformation(transformation)
 
-		constant_flow = transformation.get_flow()
+        # choose the Mean Squared Error as image loss
+        image_loss = al.loss.pairwise.MSE(fix_im_level, mov_im_level)
 
-	# create final result
-	displacement = transformation.get_displacement()
-	warped_image = al.transformation.utils.warp_image(shaded_image, displacement)
-	displacement = al.create_displacement_image_from_image(displacement, moving_image)
+        registration.set_image_loss([image_loss])
 
+        # define the regulariser for the displacement
+        regulariser = al.regulariser.displacement.DiffusionRegulariser(
+            mov_im_level.spacing)
+        regulariser.SetWeight(regularisation_weight[level])
+        registration.set_regulariser_displacement([regulariser])
 
-	# create inverse displacement field
-	inverse_displacement = transformation.get_inverse_displacement()
-	inverse_warped_image = al.transformation.utils.warp_image(warped_image, inverse_displacement)
-	inverse_displacement = al.create_displacement_image_from_image(inverse_displacement, moving_image)
+        # define the optimizer
+        optimizer = th.optim.Adam(transformation.parameters())
 
-	end = time.time()
+        registration.set_optimizer(optimizer)
+        registration.set_number_of_iterations(number_of_iterations[level])
 
-	print("=================================================================")
+        registration.start()
 
-	print("Registration done in: ", end - start)
-	print("Result parameters:")
+        constant_flow = transformation.get_flow()
 
-	# plot the results
-	plt.subplot(241)
-	plt.imshow(fixed_image.numpy(), cmap='gray')
-	plt.title('Fixed Image')
+    # create final result
+    displacement = transformation.get_displacement()
+    warped_image = al.transformation.utils.warp_image(
+        moving_image, displacement)
+    displacement = al.create_displacement_image_from_image(
+        displacement, moving_image)
 
-	plt.subplot(242)
-	plt.imshow(moving_image.numpy(), cmap='gray')
-	plt.title('Moving Image')
+    end = time.time()
 
-	plt.subplot(243)
-	plt.imshow(warped_image.numpy(), cmap='gray')
-	plt.title('Warped Shaded Moving Image')
+    print("=================================================================")
 
-	plt.subplot(244)
-	plt.imshow(displacement.magnitude().numpy(), cmap='jet')
-	plt.title('Magnitude Displacement')
+    print("Registration done in: ", end - start)
 
-	# plot the results
-	plt.subplot(245)
-	plt.imshow(warped_image.numpy(), cmap='gray')
-	plt.title('Warped Shaded Moving Image')
+    new_disp = transformation.get_displacement().detach().cpu().numpy().squeeze()
 
-	plt.subplot(246)
-	plt.imshow(shaded_image.numpy(), cmap='gray')
-	plt.title('Shaded Moving Image')
+    # tre_after = mu.tre(points_fixed,
+    #                    points_moving,
+    #                    new_disp,
+    #                    [1, 1])
 
-	plt.subplot(247)
-	plt.imshow(inverse_warped_image.numpy(), cmap='gray')
-	plt.title('Inverse Warped Shaded Moving Image')
+    # print(
+    #     f"TRE before:\t\tmin: {tre_before.min():.4f}\tmax: {tre_before.max():.4f}\tmean: {tre_before.mean():.4f}")
+    # print(
+    #     f"TRE after:\t\tmin: {tre_after.min():.4f}\tmax: {tre_after.max():.4f}\tmean: {tre_after.mean():.4f}")
+    # improvement_min = (tre_before.mean() - tre_after.mean()
+    #                    ) / tre_before.mean() * 100
+    # improvement_max = (tre_before.max() - tre_after.max()) / \
+    #     tre_before.max() * 100
+    # improvement_mean = (tre_before.mean() - tre_after.mean()
+    #                     ) / tre_before.mean() * 100
+    # print(
+    #     f"TRE improvements:\tmin: {improvement_min:.4f}%\tmax: {improvement_max:.4f}%\tmean: {improvement_mean:.4f}%")
 
-	plt.subplot(248)
-	plt.imshow(inverse_displacement.magnitude().numpy(), cmap='jet')
-	plt.title('Magnitude Inverse Displacement')
+    # mu.plot_all_registration_results("/home/fryderyk/Documents/fig.jpg",
+    #                                  moving_image.numpy(),
+    #                                  fixed_image.numpy(),
+    #                                  warped_image.numpy(),
+    #                                  new_disp,
+    #                                  moving_keypoints=points_moving,
+    #                                  fixed_keypoints=points_fixed,
+    #                                  pred_keypoints=mu.deform_landmarks(points_moving, new_disp))
 
-	plt.show()
+    # plot the results
+    plt.subplot(231)
+    plt.imshow(fixed_image.numpy(), cmap='gray')
+    plt.title('Fixed Image')
+
+    plt.subplot(232)
+    plt.imshow(warped_image.numpy(), cmap='gray')
+    plt.title('Warped Moving Image')
+
+    plt.subplot(233)
+    plt.imshow(fixed_image.numpy() - moving_image.numpy(),
+               cmap='gray', vmin=-0.5, vmax=0.5)
+    plt.title('Difference Fixed - Moving')
+
+    plt.subplot(234)
+    plt.imshow(moving_image.numpy(), cmap='gray')
+    plt.title('Moving Image')
+
+    plt.subplot(235)
+    plt.imshow(displacement.magnitude().numpy(), cmap='jet')
+    plt.title('Magnitude Displacement')
+
+    # plot the results
+    plt.subplot(236)
+    plt.imshow(fixed_image.numpy() - warped_image.numpy(),
+               cmap='gray', vmin=-0.5, vmax=0.5)
+    plt.title('Difference Fixed - Warped')
+
+    plt.show()
+
+    plt.savefig("/u/home/koeglf/Documents/code/airlab/tmp/fig.jpg")
+
+    x = 0
+
 
 if __name__ == '__main__':
-	main()
+    main()

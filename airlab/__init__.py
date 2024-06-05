@@ -15,5 +15,6 @@
 from .utils import *
 import airlab.transformation
 import airlab.loss
+import airlab.dataloading
 from .registration import *
 import airlab.regulariser

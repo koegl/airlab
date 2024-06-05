@@ -22,7 +22,6 @@ from ..transformation import utils as tu
 from ..utils import kernelFunction as utils
 
 
-
 # Loss base class (standard from PyTorch)
 class _PairwiseImageLoss(th.nn.modules.Module):
     def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None, size_average=True, reduce=True):
@@ -45,10 +44,11 @@ class _PairwiseImageLoss(th.nn.modules.Module):
         # TODO allow different image size for each image in the future
         assert self._moving_image.size == self._fixed_image.size
         assert self._moving_image.device == self._fixed_image.device
-        assert len(self._moving_image.size) == 2 or len(self._moving_image.size) == 3
+        assert len(self._moving_image.size) == 2 or len(
+            self._moving_image.size) == 3
 
         self._grid = T.utils.compute_grid(self._moving_image.size, dtype=self._moving_image.dtype,
-                                     device=self._moving_image.device)
+                                          device=self._moving_image.device)
 
         self._dtype = self._moving_image.dtype
         self._device = self._moving_image.device
@@ -67,23 +67,28 @@ class _PairwiseImageLoss(th.nn.modules.Module):
         return (Tensor): maks array
         """
         # exclude points which are transformed outside the image domain
-        mask = th.zeros_like(self._fixed_image.image, dtype=th.uint8, device=self._device)
+        mask = th.zeros_like(self._fixed_image.image,
+                             dtype=th.uint8, device=self._device)
         for dim in range(displacement.size()[-1]):
-            mask += displacement[..., dim].gt(1) + displacement[..., dim].lt(-1)
+            mask += displacement[...,
+                                 dim].gt(1) + displacement[..., dim].lt(-1)
 
         mask = mask == 0
 
         # and exclude points which are masked by the warped moving and the fixed mask
         if not self._moving_mask is None:
-            self._warped_moving_mask = F.grid_sample(self._moving_mask.image, displacement)
+            self._warped_moving_mask = F.grid_sample(
+                self._moving_mask.image, displacement)
             self._warped_moving_mask = self._warped_moving_mask >= 0.5
 
             # if either the warped moving mask or the fixed mask is zero take zero,
             # otherwise take the value of mask
             if not self._fixed_mask is None:
-                mask = th.where(((self._warped_moving_mask == 0) | (self._fixed_mask == 0)), th.zeros_like(mask), mask)
+                mask = th.where(((self._warped_moving_mask == 0) | (
+                    self._fixed_mask == 0)), th.zeros_like(mask), mask)
             else:
-                mask = th.where((self._warped_moving_mask == 0), th.zeros_like(mask), mask)
+                mask = th.where((self._warped_moving_mask == 0),
+                                th.zeros_like(mask), mask)
 
         return mask
 
@@ -115,8 +120,10 @@ class MSE(_PairwiseImageLoss):
         reduce (bool): Reduce loss function to a single value
 
     """
+
     def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None, size_average=True, reduce=True):
-        super(MSE, self).__init__(fixed_image, moving_image, fixed_mask, moving_mask, size_average, reduce)
+        super(MSE, self).__init__(fixed_image, moving_image,
+                                  fixed_mask, moving_mask, size_average, reduce)
 
         self._name = "mse"
 
@@ -131,7 +138,8 @@ class MSE(_PairwiseImageLoss):
         mask = super(MSE, self).GetCurrentMask(displacement)
 
         # warp moving image with dispalcement field
-        self.warped_moving_image = F.grid_sample(self._moving_image.image, displacement)
+        self.warped_moving_image = F.grid_sample(
+            self._moving_image.image, displacement)
 
         # compute squared differences
         value = (self.warped_moving_image - self._fixed_image.image).pow(2)
@@ -157,12 +165,15 @@ class NCC(_PairwiseImageLoss):
             moving_image (Image): Moving image for the registration
 
     """
+
     def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None):
-        super(NCC, self).__init__(fixed_image, moving_image, fixed_mask, moving_mask, False, False)
+        super(NCC, self).__init__(fixed_image, moving_image,
+                                  fixed_mask, moving_mask, False, False)
 
         self._name = "ncc"
 
-        self.warped_moving_image = th.empty_like(self._moving_image.image, dtype=self._dtype, device=self._device)
+        self.warped_moving_image = th.empty_like(
+            self._moving_image.image, dtype=self._dtype, device=self._device)
 
     def forward(self, displacement):
 
@@ -172,104 +183,16 @@ class NCC(_PairwiseImageLoss):
         # compute current mask
         mask = super(NCC, self).GetCurrentMask(displacement)
 
-        self._warped_moving_image = F.grid_sample(self._moving_image.image, displacement)
+        self._warped_moving_image = F.grid_sample(
+            self._moving_image.image, displacement)
 
         moving_image_valid = th.masked_select(self._warped_moving_image, mask)
         fixed_image_valid = th.masked_select(self._fixed_image.image, mask)
 
-
         value = -1.*th.sum((fixed_image_valid - th.mean(fixed_image_valid))*(moving_image_valid - th.mean(moving_image_valid)))\
-                /th.sqrt(th.sum((fixed_image_valid - th.mean(fixed_image_valid))**2)*th.sum((moving_image_valid - th.mean(moving_image_valid))**2) + 1e-10)
+            / th.sqrt(th.sum((fixed_image_valid - th.mean(fixed_image_valid))**2)*th.sum((moving_image_valid - th.mean(moving_image_valid))**2) + 1e-10)
 
         return value
-
-
-"""
-    Local Normaliced Cross Corelation Image Loss
-"""
-class LCC(_PairwiseImageLoss):
-    def __init__(self, fixed_image, moving_image,fixed_mask=None, moving_mask=None, sigma=[3], kernel_type="box", size_average=True, reduce=True):
-        super(LCC, self).__init__(fixed_image, moving_image, fixed_mask, moving_mask,  size_average, reduce)
-
-        self._name = "lcc"
-        self.warped_moving_image = th.empty_like(self._moving_image.image, dtype=self._dtype, device=self._device)
-        self._kernel = None
-
-        dim = len(self._moving_image.size)
-        sigma = np.array(sigma)
-
-        if sigma.size != dim:
-            sigma_app = sigma[-1]
-            while sigma.size != dim:
-                sigma = np.append(sigma, sigma_app)
-
-        if kernel_type == "box":
-            kernel_size = sigma*2 + 1
-            self._kernel = th.ones(*kernel_size.tolist(), dtype=self._dtype, device=self._device) \
-                           / float(np.product(kernel_size)**2)
-        elif kernel_type == "gaussian":
-            self._kernel = utils.gaussian_kernel(sigma, dim, asTensor=True, dtype=self._dtype, device=self._device)
-
-        self._kernel.unsqueeze_(0).unsqueeze_(0)
-
-        if dim == 2:
-            self._lcc_loss = self._lcc_loss_2d  # 2d lcc
-
-            self._mean_fixed_image = F.conv2d(self._fixed_image.image, self._kernel)
-            self._variance_fixed_image = F.conv2d(self._fixed_image.image.pow(2), self._kernel) \
-                                         - (self._mean_fixed_image.pow(2))
-        elif dim == 3:
-            self._lcc_loss = self._lcc_loss_3d  # 3d lcc
-
-            self._mean_fixed_image = F.conv3d(self._fixed_image.image, self._kernel)
-            self._variance_fixed_image = F.conv3d(self._fixed_image.image.pow(2), self._kernel) \
-                                         - (self._mean_fixed_image.pow(2))
-
-
-    def _lcc_loss_2d(self, warped_image, mask):
-
-
-        mean_moving_image = F.conv2d(warped_image, self._kernel)
-        variance_moving_image = F.conv2d(warped_image.pow(2), self._kernel) - (mean_moving_image.pow(2))
-
-        mean_fixed_moving_image = F.conv2d(self._fixed_image.image * warped_image, self._kernel)
-
-        cc = (mean_fixed_moving_image - mean_moving_image*self._mean_fixed_image)**2 \
-             / (variance_moving_image*self._variance_fixed_image + 1e-10)
-
-        mask = F.conv2d(mask, self._kernel)
-        mask = mask == 0
-
-        return -1.0*th.masked_select(cc, mask)
-
-    def _lcc_loss_3d(self, warped_image, mask):
-
-        mean_moving_image = F.conv3d(warped_image, self._kernel)
-        variance_moving_image = F.conv3d(warped_image.pow(2), self._kernel) - (mean_moving_image.pow(2))
-
-        mean_fixed_moving_image = F.conv3d(self._fixed_image.image * warped_image, self._kernel)
-
-        cc = (mean_fixed_moving_image - mean_moving_image*self._mean_fixed_image)**2\
-             /(variance_moving_image*self._variance_fixed_image + 1e-10)
-
-        mask = F.conv3d(mask, self._kernel)
-        mask = mask == 0
-
-        return -1.0 * th.masked_select(cc, mask)
-
-    def forward(self, displacement):
-
-        # compute displacement field
-        displacement = self._grid + displacement
-
-        # compute current mask
-        mask = super(LCC, self).GetCurrentMask(displacement)
-        mask = 1-mask
-        mask = mask.to(dtype=self._dtype, device=self._device)
-
-        self._warped_moving_image = F.grid_sample(self._moving_image.image, displacement)
-
-        return self.return_loss(self._lcc_loss(self._warped_moving_image, mask))
 
 
 class MI(_PairwiseImageLoss):
@@ -291,9 +214,11 @@ class MI(_PairwiseImageLoss):
             reduce (bool): Reduce loss function to a single value
 
     """
+
     def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None, bins=64, sigma=3,
                  spatial_samples=0.1, background=None, size_average=True, reduce=True):
-        super(MI, self).__init__(fixed_image, moving_image, fixed_mask, moving_mask, size_average, reduce)
+        super(MI, self).__init__(fixed_image, moving_image,
+                                 fixed_mask, moving_mask, size_average, reduce)
 
         self._name = "mi"
 
@@ -338,7 +263,8 @@ class MI(_PairwiseImageLoss):
 
     def _compute_marginal_entropy(self, values, bins):
 
-        p = th.exp(-((values - bins).pow(2).div(self._sigma))).div(self._normalizer_1d)
+        p = th.exp(-((values - bins).pow(2).div(self._sigma))
+                   ).div(self._normalizer_1d)
         p_n = p.mean(dim=1)
         p_n = p_n/(th.sum(p_n) + 1e-10)
 
@@ -352,12 +278,14 @@ class MI(_PairwiseImageLoss):
         # compute current mask
         mask = super(MI, self).GetCurrentMask(displacement)
 
-        self._warped_moving_image = F.grid_sample(self._moving_image.image, displacement)
+        self._warped_moving_image = F.grid_sample(
+            self._moving_image.image, displacement)
 
         moving_image_valid = th.masked_select(self._warped_moving_image, mask)
         fixed_image_valid = th.masked_select(self._fixed_image.image, mask)
 
-        mask = (fixed_image_valid > self._background_fixed) & (moving_image_valid > self._background_moving)
+        mask = (fixed_image_valid > self._background_fixed) & (
+            moving_image_valid > self._background_moving)
 
         fixed_image_valid = th.masked_select(fixed_image_valid, mask)
         moving_image_valid = th.masked_select(moving_image_valid, mask)
@@ -368,14 +296,18 @@ class MI(_PairwiseImageLoss):
                           dtype=self._fixed_image.dtype).uniform_() < self._spatial_samples
 
         # compute marginal entropy fixed image
-        image_samples_fixed = th.masked_select(fixed_image_valid.view(-1), sample)
+        image_samples_fixed = th.masked_select(
+            fixed_image_valid.view(-1), sample)
 
-        ent_fixed_image, p_f = self._compute_marginal_entropy(image_samples_fixed, self._bins_fixed_image)
+        ent_fixed_image, p_f = self._compute_marginal_entropy(
+            image_samples_fixed, self._bins_fixed_image)
 
         # compute marginal entropy moving image
-        image_samples_moving = th.masked_select(moving_image_valid.view(-1), sample)
+        image_samples_moving = th.masked_select(
+            moving_image_valid.view(-1), sample)
 
-        ent_moving_image, p_m = self._compute_marginal_entropy(image_samples_moving, self._bins_moving_image)
+        ent_moving_image, p_m = self._compute_marginal_entropy(
+            image_samples_moving, self._bins_moving_image)
 
         # compute joint entropy
         p_joint = th.mm(p_f, p_m.transpose(0, 1)).div(self._normalizer_2d)
@@ -384,6 +316,7 @@ class MI(_PairwiseImageLoss):
         ent_joint = -(p_joint * th.log2(p_joint + 1e-10)).sum()
 
         return -(ent_fixed_image + ent_moving_image - ent_joint)
+
 
 class NGF(_PairwiseImageLoss):
     r""" Implementation of the Normalized Gradient Fields image loss.
@@ -398,10 +331,12 @@ class NGF(_PairwiseImageLoss):
                 reduce (bool): Reduce loss function to a single value
 
     """
+
     def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None, epsilon=1e-5,
                  size_average=True,
                  reduce=True):
-        super(NGF, self).__init__(fixed_image, moving_image, fixed_mask, moving_mask, size_average, reduce)
+        super(NGF, self).__init__(fixed_image, moving_image,
+                                  fixed_mask, moving_mask, size_average, reduce)
 
         self._name = "ngf"
 
@@ -409,8 +344,10 @@ class NGF(_PairwiseImageLoss):
         self._epsilon = epsilon
 
         if self._dim == 2:
-            dx = (fixed_image.image[..., 1:, 1:] - fixed_image.image[..., :-1, 1:]) * fixed_image.spacing[0]
-            dy = (fixed_image.image[..., 1:, 1:] - fixed_image.image[..., 1:, :-1]) * fixed_image.spacing[1]
+            dx = (fixed_image.image[..., 1:, 1:] -
+                  fixed_image.image[..., :-1, 1:]) * fixed_image.spacing[0]
+            dy = (fixed_image.image[..., 1:, 1:] -
+                  fixed_image.image[..., 1:, :-1]) * fixed_image.spacing[1]
 
             if self._epsilon is None:
                 with th.no_grad():
@@ -418,28 +355,37 @@ class NGF(_PairwiseImageLoss):
 
             norm = th.sqrt(dx.pow(2) + dy.pow(2) + self._epsilon ** 2)
 
-            self._ng_fixed_image = F.pad(th.cat((dx, dy), dim=1) / norm, (0, 1, 0, 1))
+            self._ng_fixed_image = F.pad(
+                th.cat((dx, dy), dim=1) / norm, (0, 1, 0, 1))
 
             self._ngf_loss = self._ngf_loss_2d
         else:
-            dx = (fixed_image.image[..., 1:, 1:, 1:] - fixed_image.image[..., :-1, 1:, 1:]) * fixed_image.spacing[0]
-            dy = (fixed_image.image[..., 1:, 1:, 1:] - fixed_image.image[..., 1:, :-1, 1:]) * fixed_image.spacing[1]
-            dz = (fixed_image.image[..., 1:, 1:, 1:] - fixed_image.image[..., 1:, 1:, :-1]) * fixed_image.spacing[2]
+            dx = (fixed_image.image[..., 1:, 1:, 1:] -
+                  fixed_image.image[..., :-1, 1:, 1:]) * fixed_image.spacing[0]
+            dy = (fixed_image.image[..., 1:, 1:, 1:] -
+                  fixed_image.image[..., 1:, :-1, 1:]) * fixed_image.spacing[1]
+            dz = (fixed_image.image[..., 1:, 1:, 1:] -
+                  fixed_image.image[..., 1:, 1:, :-1]) * fixed_image.spacing[2]
 
             if self._epsilon is None:
                 with th.no_grad():
-                    self._epsilon = th.mean(th.abs(dx) + th.abs(dy) + th.abs(dz))
+                    self._epsilon = th.mean(
+                        th.abs(dx) + th.abs(dy) + th.abs(dz))
 
-            norm = th.sqrt(dx.pow(2) + dy.pow(2) + dz.pow(2) + self._epsilon ** 2)
+            norm = th.sqrt(dx.pow(2) + dy.pow(2) +
+                           dz.pow(2) + self._epsilon ** 2)
 
-            self._ng_fixed_image = F.pad(th.cat((dx, dy, dz), dim=1) / norm, (0, 1, 0, 1, 0, 1))
+            self._ng_fixed_image = F.pad(
+                th.cat((dx, dy, dz), dim=1) / norm, (0, 1, 0, 1, 0, 1))
 
             self._ngf_loss = self._ngf_loss_3d
 
     def _ngf_loss_2d(self, warped_image):
 
-        dx = (warped_image[..., 1:, 1:] - warped_image[..., :-1, 1:]) * self._moving_image.spacing[0]
-        dy = (warped_image[..., 1:, 1:] - warped_image[..., 1:, :-1]) * self._moving_image.spacing[1]
+        dx = (warped_image[..., 1:, 1:] - warped_image[...,
+              :-1, 1:]) * self._moving_image.spacing[0]
+        dy = (warped_image[..., 1:, 1:] - warped_image[...,
+              1:, :-1]) * self._moving_image.spacing[1]
 
         norm = th.sqrt(dx.pow(2) + dy.pow(2) + self._epsilon ** 2)
 
@@ -447,9 +393,12 @@ class NGF(_PairwiseImageLoss):
 
     def _ngf_loss_3d(self, warped_image):
 
-        dx = (warped_image[..., 1:, 1:, 1:] - warped_image[..., :-1, 1:, 1:]) * self._moving_image.spacing[0]
-        dy = (warped_image[..., 1:, 1:, 1:] - warped_image[..., 1:, :-1, 1:]) * self._moving_image.spacing[1]
-        dz = (warped_image[..., 1:, 1:, 1:] - warped_image[..., 1:, 1:, :-1]) * self._moving_image.spacing[2]
+        dx = (warped_image[..., 1:, 1:, 1:] - warped_image[...,
+              :-1, 1:, 1:]) * self._moving_image.spacing[0]
+        dy = (warped_image[..., 1:, 1:, 1:] - warped_image[...,
+              1:, :-1, 1:]) * self._moving_image.spacing[1]
+        dz = (warped_image[..., 1:, 1:, 1:] - warped_image[...,
+              1:, 1:, :-1]) * self._moving_image.spacing[2]
 
         norm = th.sqrt(dx.pow(2) + dy.pow(2) + dz.pow(2) + self._epsilon ** 2)
 
@@ -463,116 +412,18 @@ class NGF(_PairwiseImageLoss):
         # compute current mask
         mask = super(NGF, self).GetCurrentMask(displacement)
 
-        self._warped_moving_image = F.grid_sample(self._moving_image.image, displacement)
+        self._warped_moving_image = F.grid_sample(
+            self._moving_image.image, displacement)
 
         # compute the gradient of the warped image
         ng_warped_image = self._ngf_loss(self._warped_moving_image)
 
         value = 0
         for dim in range(self._dim):
-            value = value + ng_warped_image[:, dim, ...] * self._ng_fixed_image[:, dim, ...]
+            value = value + \
+                ng_warped_image[:, dim, ...] * \
+                self._ng_fixed_image[:, dim, ...]
 
         value = 0.5 * th.masked_select(-value.pow(2), mask)
 
         return self.return_loss(value)
-
-
-class SSIM(_PairwiseImageLoss):
-    r""" Implementation of the Structual Similarity Image Measure loss.
-
-        Args:
-                fixed_image (Image): Fixed image for the registration
-                moving_image (Image): Moving image for the registration
-                fixed_mask (Tensor): Mask for the fixed image
-                moving_mask (Tensor): Mask for the moving image
-                sigma (float): Sigma for the kernel
-                kernel_type (string): Type of kernel i.e. gaussian, box
-                alpha (float): Controls the influence of the luminance value
-                beta (float): Controls the influence of the contrast value
-                gamma (float): Controls the influence of the structure value
-                c1 (float): Numerical constant for the luminance value
-                c2 (float): Numerical constant for the contrast value
-                c3 (float): Numerical constant for the structure value
-                size_average (bool): Average loss function
-                reduce (bool): Reduce loss function to a single value
-    """
-    def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None,
-                 sigma=[3], dim=2, kernel_type="box", alpha=1, beta=1, gamma=1, c1=0.00001, c2=0.00001,
-                 c3=0.00001, size_average=True, reduce=True, ):
-        super(SSIM, self).__init__(fixed_image, moving_image, fixed_mask, moving_mask, size_average, reduce)
-
-        self._alpha = alpha
-        self._beta = beta
-        self._gamma = gamma
-
-        self._c1 = c1
-        self._c2 = c2
-        self._c3 = c3
-
-        self._name = "sim"
-        self._kernel = None
-
-        dim = dim
-        sigma = np.array(sigma)
-
-        if sigma.size != dim:
-            sigma_app = sigma[-1]
-            while sigma.size != dim:
-                sigma = np.append(sigma, sigma_app)
-
-        if kernel_type == "box":
-            kernel_size = sigma * 2 + 1
-            self._kernel = th.ones(*kernel_size.tolist()) \
-                           / float(np.product(kernel_size) ** 2)
-        elif kernel_type == "gaussian":
-            self._kernel = utils.gaussian_kernel(sigma, dim, asTensor=True)
-
-        self._kernel.unsqueeze_(0).unsqueeze_(0)
-
-        self._kernel = self._kernel.to(dtype=self._dtype, device=self._device)
-
-        # calculate mean and variance of the fixed image
-        self._mean_fixed_image = F.conv2d(self._fixed_image.image, self._kernel)
-        self._variance_fixed_image = F.conv2d(self._fixed_image.image.pow(2), self._kernel) \
-                                     - (self._mean_fixed_image.pow(2))
-
-    def forward(self, displacement):
-        # compute displacement field
-        displacement = self._grid + displacement
-
-        # compute current mask
-        mask = super(SSIM, self).GetCurrentMask(displacement)
-        mask = 1 - mask
-        mask = mask.to(dtype=self._dtype, device=self._device)
-
-        self._warped_moving_image = F.grid_sample(self._moving_image.image, displacement)
-
-        mask = F.conv2d(mask, self._kernel)
-        mask = mask == 0
-
-        mean_moving_image = F.conv2d(self._warped_moving_image, self._kernel)
-
-        variance_moving_image = F.conv2d(self._warped_moving_image.pow(2), self._kernel) - (
-            mean_moving_image.pow(2))
-
-        mean_fixed_moving_image = F.conv2d(self._fixed_image.image * self._warped_moving_image, self._kernel)
-
-        covariance_fixed_moving = (mean_fixed_moving_image - mean_moving_image * self._mean_fixed_image)
-
-        luminance = (2 * self._mean_fixed_image * mean_moving_image + self._c1) / \
-                    (self._mean_fixed_image.pow(2) + mean_moving_image.pow(2) + self._c1)
-
-        contrast = (2 * th.sqrt(self._variance_fixed_image + 1e-10) * th.sqrt(
-            variance_moving_image + 1e-10) + self._c2) / \
-                   (self._variance_fixed_image + variance_moving_image + self._c2)
-
-        structure = (covariance_fixed_moving + self._c3) / \
-                    (th.sqrt(self._variance_fixed_image + 1e-10) * th.sqrt(
-                        variance_moving_image + 1e-10) + self._c3)
-
-        sim = luminance.pow(self._alpha) * contrast.pow(self._beta) * structure.pow(self._gamma)
-
-        value = -1.0 * th.masked_select(sim, mask)
-
-        return self.return_loss(value)
-
