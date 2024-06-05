@@ -66,8 +66,9 @@ def main():
 
     # In order to use a GPU uncomment the following line. The number is the device index of the used GPU
     # Here, the GPU with the index 0 is used.
-    # device = th.device("cuda:0")
+    device = th.device("cuda:0")
 
+    """
     loader = al.dataloading.loader.Fire(path_base=Path("/home/fryderyk/Documents/data/FIRE"),
                                         dtype=dtype,
                                         device=device,
@@ -80,9 +81,10 @@ def main():
 
     fixed_image, moving_image = loader[file_index]
     points_fixed, points_moving = laoder_points[file_index]
+    """
 
-    fixed_image, moving_image = _get_image_pair("/home/fryderyk/Downloads/archive/trainingSample/img_5.jpg",
-                                                "/home/fryderyk/Downloads/archive/trainingSample/img_1.jpg",
+    fixed_image, moving_image = _get_image_pair("/data/mnist/trainingSample/img_5.jpg",
+                                                "/data/mnist/trainingSample/img_1.jpg",
                                                 dtype,
                                                 device)
 
@@ -112,12 +114,6 @@ def main():
                                                                           dtype=dtype,
                                                                           device=device,
                                                                           diffeomorphic=True)
-
-        # if once:
-        #     once = False
-        #     displacement_once = transformation.get_displacement().detach().numpy().squeeze()
-        #     tre_before = mu.tre(points_fixed, points_moving,
-        #                         displacement_once, [1, 1])
 
         if level > 0:
             constant_flow = al.transformation.utils.upsample_displacement(constant_flow,
@@ -161,7 +157,7 @@ def main():
 
     print("Registration done in: ", end - start)
 
-    new_disp = transformation.get_displacement().detach().numpy().squeeze()
+    new_disp = transformation.get_displacement().detach().cpu().numpy().squeeze()
 
     # tre_after = mu.tre(points_fixed,
     #                    points_moving,
@@ -219,6 +215,8 @@ def main():
     plt.title('Difference Fixed - Warped')
 
     plt.show()
+
+    plt.savefig("/u/home/koeglf/Documents/code/airlab/tmp/fig.jpg")
 
     x = 0
 
