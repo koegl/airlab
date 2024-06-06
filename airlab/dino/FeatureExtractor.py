@@ -9,13 +9,15 @@ from typing import Optional
 
 class FeatureExtractor():
 
-    def __init__(self, encoder_type: str, args: Optional[dict] = None):
+    def __init__(self, encoder_type: str, device, args: Optional[dict] = None):
         self.features = None
         self.name = encoder_type
         assert encoder_type in ["DINOv2", "CLIP", "SAM", "MedSAM", "BLIP"]
 
-        self.encoder = self._load_encoder_model()
+        self.device = device
         self.args = args
+
+        self.encoder = self._load_encoder_model()
 
     def _load_encoder_model(self):
         if self.name == "DINOv2":
@@ -27,9 +29,21 @@ class FeatureExtractor():
         else:
             model = None
             print("Not implemented")
-        return model
+        return model.to(self.device)
 
-    def compute_features(self, image: np.ndarray):
+    def min_max_normalization(self, features: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize the features to the range [0, 1].
+        """
+
+        min_val = features.min()
+        max_val = features.max()
+
+        features = (features - min_val) / (max_val - min_val)
+
+        return features
+
+    def compute_features(self, image: torch.Tensor):
         """
 
         :param image: (h,w,d), ideally (h,w,3) in RGB
@@ -38,7 +52,9 @@ class FeatureExtractor():
         # assert image.ndim == 3, image.shape  # batch size not
         if self.name == "DINOv2":
             # print("ddd", image.shape)
-            image = (np.array(image) * 255).astype(np.uint8).squeeze()
+
+            image = self.min_max_normalization(image)
+
             if image.shape[-1] != 3:
                 image = self._convert_to_three_channels(
                     image, self.args["slice_dist"])
@@ -141,7 +157,7 @@ class FeatureExtractor():
         pca_features = pca.transform(features)
         return pca_features
 
-    def _convert_to_three_channels(self, image: np.ndarray, slice_distance: int):
+    def _convert_to_three_channels(self, image: torch.Tensor, slice_distance: int):
         """
         Converts an image of shape (h,w,d) to (h,w,3)
         :param image:
@@ -153,7 +169,7 @@ class FeatureExtractor():
         mid_slice = int(shape[-2] / 2)
         if slice_distance == 0:
             # repeat images 3times in last dimension
-            image = np.repeat(image[:, :, np.newaxis], 3, axis=2)
+            image = torch.repeat_interleave(image.unsqueeze(0), 3, dim=0)
         else:
             print("Extracting slices:", mid_slice - slice_distance,
                   mid_slice, mid_slice + slice_distance)
@@ -162,30 +178,11 @@ class FeatureExtractor():
         return image
 
     def _compute_DINOv2_features(self, image: np.ndarray):
-        # print(image.shape)
-
-        shape = image.shape[:2]
-        shape_new = [(x + (14-x % 14))*4 for x in list(shape)]
-        # print(shape, shape_new, image.dtype)
-
-        image = Image.fromarray(image)
-
-        transform1 = transforms.Compose([
-            transforms.Resize(shape_new),
-            # transforms.Resize(520),
-            # transforms.CenterCrop(518),  # should be multiple of model patch_size
-            transforms.ToTensor(),
-            transforms.Normalize(mean=0.5, std=0.2)
-        ])
-
-        image = transform1(image)
-        # print("image after preprocessing", image.shape)
-
         total_features = []
-        with torch.no_grad():
-            features_dict = self.encoder.forward_features(image.unsqueeze(0))
-            features = features_dict['x_norm_patchtokens']
-            total_features.append(features)
+        features_dict = self.encoder.forward_features(
+            image.unsqueeze(0))
+        features = features_dict['x_norm_patchtokens']
+        total_features.append(features)
 
         features = torch.cat(total_features, dim=0).squeeze()
         # print("Features shape:", features.shape)

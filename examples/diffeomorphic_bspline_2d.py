@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import torch
 import sys
 import os
 import time
@@ -37,13 +38,37 @@ warnings.filterwarnings("ignore", category=UserWarning)
 sys.stderr = open(os.devnull, 'w')
 
 
+torch.autograd.set_detect_anomaly(True)
+
+
+def print_2d_tensor(tensor):
+    """
+    Print a 2D tensor in a readable format.
+
+    Args:
+    tensor (torch.Tensor): The 2D tensor to print.
+    """
+    if tensor.dim() != 2:
+        raise ValueError("The input tensor must be 2-dimensional")
+
+    # Convert to NumPy array if it's a PyTorch tensor
+    tensor = tensor.cpu().detach().numpy()
+    for row in tensor:
+        print(" ".join(f"{elem:.4f}" for elem in row))
+
+
 def _get_image_pair(path_fixed: Path, path_moving: Path, dtype, device):
 
     # load the images
+    fac = 8
     image_fixed = np.array(Image.open(
-        path_fixed).convert('L').resize((392, 392)))
+        path_fixed).convert('L').resize((28*fac, 28*fac)))
     image_moving = np.array(Image.open(
-        path_moving).convert('L').resize((392, 392)))
+        path_moving).convert('L').resize((28*fac, 28*fac)))
+    # image_fixed = np.array(Image.open(
+    #     path_fixed).convert('L'))
+    # image_moving = np.array(Image.open(
+    #     path_moving).convert('L'))
 
     # min max normalization 0-1
     image_fixed = (image_fixed - np.min(image_fixed)) / \
@@ -84,11 +109,11 @@ def main():
         moving_image, [[4, 4], [2, 2]])
 
     regularisation_weight = [10, 50, 500]
-    number_of_iterations = list(np.array([4, 2, 1]) * 32)
+    number_of_iterations = list(np.array([3, 3, 3]) * 8)
     # number_of_iterations = [1, 1, 1]
 
+    # sigma = [[8, 8], [4, 4], [2, 2]]
     sigma = [[20, 20], [12, 12], [4, 4]]
-    # sigma = [[20, 20], [12, 12], [4, 4]]
 
     for level, (mov_im_level, fix_im_level) in enumerate(zip(moving_image_pyramid, fixed_image_pyramid)):
 
@@ -111,10 +136,12 @@ def main():
         registration.set_transformation(transformation)
 
         # choose the Mean Squared Error as image loss
+        image_loss = al.loss.pairwise.Random(
+            fix_im_level, mov_im_level)
         # image_loss = al.loss.pairwise.MSE(fix_im_level, mov_im_level)
-        image_loss = al.loss.pairwise.Dino(fix_im_level,
-                                           mov_im_level,
-                                           dimensions=1)
+        # image_loss = al.loss.pairwise.Dino(fix_im_level,
+        #                                    mov_im_level,
+        #                                    dimensions=1)
 
         registration.set_image_loss([image_loss])
 
@@ -125,7 +152,9 @@ def main():
         registration.set_regulariser_displacement([regulariser])
 
         # define the optimizer
-        optimizer = th.optim.Adam(transformation.parameters())
+        # , lr=10000000000)
+        optimizer = th.optim.Adam(
+            transformation.parameters(), lr=0.1)
 
         registration.set_optimizer(optimizer)
         registration.set_number_of_iterations(number_of_iterations[level])
@@ -206,7 +235,8 @@ def main():
 
     plt.show()
 
-    plt.savefig("/u/home/koeglf/Documents/code/airlab/tmp/fig.jpg")
+    plt.savefig(
+        "/u/home/koeglf/Documents/code/airlab/tmp/resulting_registration.jpg")
 
     x = 0
 

@@ -122,7 +122,7 @@ class PairwiseRegistration(_PairwiseRegistration):
         # sum up all loss terms
         loss = sum(lossList)
 
-        loss.backward()
+        loss.backward(retain_graph=True)
 
         return loss
 
