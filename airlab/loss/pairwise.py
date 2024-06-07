@@ -14,12 +14,8 @@
 import os
 import sys
 
-import torch as th
-import torch.nn.functional as F
-from torchvision import transforms
-
-import numpy as np
 import torch
+import torch.nn.functional as F
 
 from .. import transformation as T
 from ..transformation import utils as tu
@@ -35,7 +31,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 sys.stderr = open(os.devnull, 'w')
 
 
-class _PairwiseImageLoss(th.nn.modules.Module):
+class _PairwiseImageLoss(torch.nn.modules.Module):
     def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None, size_average=True, reduce=True):
         super(_PairwiseImageLoss, self).__init__()
         self._size_average = size_average
@@ -79,8 +75,8 @@ class _PairwiseImageLoss(th.nn.modules.Module):
         return (Tensor): maks array
         """
         # exclude points which are transformed outside the image domain
-        mask = th.zeros_like(self._fixed_image.image,
-                             dtype=th.uint8, device=self._device)
+        mask = torch.zeros_like(self._fixed_image.image,
+                                dtype=torch.uint8, device=self._device)
         for dim in range(displacement.size()[-1]):
             mask += displacement[...,
                                  dim].gt(1) + displacement[..., dim].lt(-1)
@@ -96,11 +92,11 @@ class _PairwiseImageLoss(th.nn.modules.Module):
             # if either the warped moving mask or the fixed mask is zero take zero,
             # otherwise take the value of mask
             if not self._fixed_mask is None:
-                mask = th.where(((self._warped_moving_mask == 0) | (
-                    self._fixed_mask == 0)), th.zeros_like(mask), mask)
+                mask = torch.where(((self._warped_moving_mask == 0) | (
+                    self._fixed_mask == 0)), torch.zeros_like(mask), mask)
             else:
-                mask = th.where((self._warped_moving_mask == 0),
-                                th.zeros_like(mask), mask)
+                mask = torch.where((self._warped_moving_mask == 0),
+                                   torch.zeros_like(mask), mask)
 
         return mask
 
@@ -126,66 +122,204 @@ class FeatureSpaceMSE:
         self.feature_extractor = feature_extractor
         self.f_true = None
 
+    def pca(self, X, k=2):
+        """
+        Perform PCA on the input data X.
+
+        Args:
+        - X (torch.Tensor): The input data matrix of shape (n_samples, n_features).
+        - k (int): The number of principal components to compute.
+
+        Returns:
+        - projected (torch.Tensor): The data projected onto the first k principal components.
+        - components (torch.Tensor): The first k principal components.
+        """
+        # Center the data
+        X_mean = torch.mean(X, dim=0)
+        X_centered = X - X_mean
+
+        # Compute covariance matrix
+        covariance_matrix = torch.mm(
+            X_centered.T, X_centered) / (X_centered.size(0) - 1)
+
+        # Eigen decomposition
+        eigenvalues, eigenvectors = torch.linalg.eig(
+            covariance_matrix)
+        eigenvalues = eigenvalues.real
+        eigenvectors = eigenvectors.real
+
+        # Sort eigenvalues and eigenvectors
+        sorted_indices = torch.argsort(eigenvalues, descending=True)
+        sorted_eigenvectors = eigenvectors[:, sorted_indices]
+
+        # Select the first k principal components
+        components = sorted_eigenvectors[:, :k]
+
+        # Project the data onto the first k principal components
+        projected = torch.mm(X_centered, components)
+
+        return projected
+
+    def mi(self, fixed, moving, num_bins=32, min_val=0.0, max_val=1.0):
+        """
+            Compute the mutual information between two images.
+
+            Args:
+            - fixed (torch.Tensor): The fixed image.
+            - moving (torch.Tensor): The moving image.
+            - num_bins (int): The number of bins in the histogram.
+            - min_val (float): Minimum value of the intensity.
+            - max_val (float): Maximum value of the intensity.
+
+            Returns:
+            - mi (torch.Tensor): The mutual information.
+            """
+
+        def soft_binning(values, num_bins):
+            """
+            Convert continuous values to discrete bins using a softmax approximation.
+
+            Args:
+            - values (torch.Tensor): Continuous values.
+            - num_bins (int): Number of bins.
+
+            Returns:
+            - binned (torch.Tensor): Soft binned values.
+            """
+            min_val, _ = torch.min(values), torch.max(values)
+            max_val, _ = torch.max(values), torch.min(values)
+            values = (values - min_val) / (max_val -
+                                           min_val + 1e-10)  # Normalize to [0, 1]
+            values = values * (num_bins - 1)  # Scale to [0, num_bins-1]
+
+            bin_edges = torch.linspace(
+                0, num_bins - 1, num_bins).to(values.device)
+            binned = torch.softmax(-((values.unsqueeze(1) -
+                                   bin_edges.unsqueeze(0))**2), dim=1)
+
+            return binned
+
+        def joint_histogram_soft(fixed, moving, num_bins=32):
+            """
+            Compute the joint histogram for two images using soft binning.
+
+            Args:
+            - fixed (torch.Tensor): The fixed image.
+            - moving (torch.Tensor): The moving image.
+            - num_bins (int): The number of bins in the histogram.
+
+            Returns:
+            - joint_hist (torch.Tensor): The joint histogram.
+            """
+            assert fixed.shape == moving.shape, "Images must have the same shape"
+
+            # Soft binning
+            fixed_binned = soft_binning(fixed.flatten(), num_bins)
+            moving_binned = soft_binning(moving.flatten(), num_bins)
+
+            joint_hist = torch.matmul(fixed_binned.t(), moving_binned)
+            joint_hist /= torch.sum(joint_hist)
+
+            return joint_hist
+
+        def marginal_histograms_soft(joint_hist):
+            """
+            Compute the marginal histograms from the joint histogram.
+
+            Args:
+            - joint_hist (torch.Tensor): The joint histogram.
+
+            Returns:
+            - fixed_hist (torch.Tensor): The marginal histogram for the fixed image.
+            - moving_hist (torch.Tensor): The marginal histogram for the moving image.
+            """
+            fixed_hist = torch.sum(joint_hist, dim=1)
+            moving_hist = torch.sum(joint_hist, dim=0)
+            return fixed_hist, moving_hist
+
+        def entropy(hist):
+            """
+            Compute the entropy of a histogram.
+
+            Args:
+            - hist (torch.Tensor): The histogram.
+
+            Returns:
+            - entropy (torch.Tensor): The entropy.
+            """
+            p = hist / torch.sum(hist)
+            p = p[p > 0]
+            return -torch.sum(p * torch.log(p + 1e-10))
+
+        joint_hist = joint_histogram_soft(fixed, moving, num_bins)
+        fixed_hist, moving_hist = marginal_histograms_soft(joint_hist)
+        h_joint = entropy(joint_hist)
+        h_fixed = entropy(fixed_hist)
+        h_moving = entropy(moving_hist)
+        mi_score = h_fixed + h_moving - h_joint
+
+        return mi_score
+
+    def mse(self, fixed, moving):
+        """
+        Compute the mean squared error between two images.
+
+        Args:
+        - fixed (torch.Tensor): The fixed image.
+        - moving (torch.Tensor): The moving image.
+
+        Returns:
+        - mse (torch.Tensor): The mean squared error.
+        """
+        return torch.mean((fixed - moving)**2)
+
+    def ncc(self, fixed, moving):
+        """
+        Compute the normalized cross-correlation between two images.
+
+        Args:
+        - fixed (torch.Tensor): The fixed image.
+        - moving (torch.Tensor): The moving image.
+
+        Returns:
+        - ncc (torch.Tensor): The normalized cross-correlation.
+        """
+        fixed = fixed - torch.mean(fixed)
+        moving = moving - torch.mean(moving)
+        ncc = torch.sum(
+            fixed * moving) / (torch.sqrt(torch.sum(fixed**2) * torch.sum(moving**2)) + 1e-10)
+        return ncc
+
     def loss(self, y_true, y_pred):
         if self.f_true == None:
             self.f_true = self.feature_extractor.compute_features(
                 y_true)  # TODO perform feature extraction in torch not np
         f_pred = self.feature_extractor.compute_features(y_pred)
 
-        # fixed = self.feature_extractor.features_pca(self.f_true, 1)
-        # moving = self.feature_extractor.features_pca(f_pred, 1)
+        fixed = self.f_true
+        moving = f_pred
 
-        # return np.mean((fixed - moving) ** 2)
+        dims = 4
 
-        return torch.mean((self.f_true - f_pred) ** 2)
+        fixed = self.pca(fixed, dims)
+        moving = self.pca(moving, dims)
+
+        mse = self.mse(fixed, moving)
+
+        mi = self.mi(fixed.flatten(), moving.flatten())
+
+        ncc = self.ncc(fixed, moving)
+
+        return mi
 
 
 class Dino(_PairwiseImageLoss):
-    def __init__(self, fixed_image, moving_image, dimensions, fixed_mask=None, moving_mask=None, size_average=True, reduce=True):
+
+    def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None, size_average=True, reduce=True):
         super(Dino, self).__init__(fixed_image, moving_image,
                                    fixed_mask, moving_mask, size_average, reduce)
 
-        self.dimensions = dimensions
-
-        self._name = "dino"
-
-        self.warped_moving_image = None
-
-        self.feature_extractor = FeatureExtractor.FeatureExtractor("DINOv2", {
-                                                                   "slice_dist": 0})
-        self.loss = FeatureSpaceMSE(self.feature_extractor).loss
-
-    def forward(self, displacement):
-
-        # compute displacement field
-        displacement = self._grid + displacement
-
-        # warp moving image with dispalcement field
-        self.warped_moving_image = F.grid_sample(
-            self._moving_image.image, displacement)  # .squeeze()
-
-        # upsample both with torch
-        val = 14
-        scale_factor = [val, val]
-
-        fixed = F.interpolate(
-            self._fixed_image.image, scale_factor=scale_factor, mode='bilinear').squeeze()
-        moving = F.interpolate(
-            self.warped_moving_image, scale_factor=scale_factor, mode='bilinear').squeeze()
-
-        final_loss = self.loss(fixed.detach().cpu().numpy(),
-                               moving.detach().cpu().numpy()) * self._weight
-
-        return final_loss
-
-
-class Random(_PairwiseImageLoss):
-
-    def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None, size_average=True, reduce=True):
-        super(Random, self).__init__(fixed_image, moving_image,
-                                     fixed_mask, moving_mask, size_average, reduce)
-
-        self._name = "random"
+        self._name = "Dino"
 
         self.warped_moving_image = None
 
@@ -216,13 +350,7 @@ class Random(_PairwiseImageLoss):
 
         return_val2 = self.loss(fixed, moving) * self._weight
 
-        # compute squared differences
-        value = (moving - fixed).pow(2)
-        return_val1 = torch.mean(value)
-
         return return_val2
-
-        # return
 
 
 class MSE(_PairwiseImageLoss):
@@ -266,6 +394,6 @@ class MSE(_PairwiseImageLoss):
         value = (self.warped_moving_image - self._fixed_image.image).pow(2)
 
         # mask values
-        value = th.masked_select(value, mask)
+        value = torch.masked_select(value, mask)
 
         return self.return_loss(value)
