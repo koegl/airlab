@@ -109,11 +109,11 @@ def main():
         moving_image, [[4, 4], [2, 2]])
 
     regularisation_weight = [10, 50, 500]
-    number_of_iterations = list(np.array([3, 3, 3]) * 8)
+    number_of_iterations = list(np.array([3, 3, 3]) * 32)
     # number_of_iterations = [1, 1, 1]
 
     # sigma = [[8, 8], [4, 4], [2, 2]]
-    sigma = [[20, 20], [12, 12], [4, 4]]
+    sigma = [[20, 20], [30, 30], [40, 40]]
 
     for level, (mov_im_level, fix_im_level) in enumerate(zip(moving_image_pyramid, fixed_image_pyramid)):
 
@@ -136,12 +136,8 @@ def main():
         registration.set_transformation(transformation)
 
         # choose the Mean Squared Error as image loss
-        image_loss = al.loss.pairwise.Random(
-            fix_im_level, mov_im_level)
         # image_loss = al.loss.pairwise.MSE(fix_im_level, mov_im_level)
-        # image_loss = al.loss.pairwise.Dino(fix_im_level,
-        #                                    mov_im_level,
-        #                                    dimensions=1)
+        image_loss = al.loss.pairwise.Dino(fix_im_level, mov_im_level)
 
         registration.set_image_loss([image_loss])
 
@@ -154,7 +150,7 @@ def main():
         # define the optimizer
         # , lr=10000000000)
         optimizer = th.optim.Adam(
-            transformation.parameters(), lr=0.1)
+            transformation.parameters(), lr=0.001)
 
         registration.set_optimizer(optimizer)
         registration.set_number_of_iterations(number_of_iterations[level])
