@@ -1,4 +1,4 @@
-## Copyright 2018 University of Basel, Center for medical Image Analysis and Navigation
+# Copyright 2018 University of Basel, Center for medical Image Analysis and Navigation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from ..utils import image as iutils
 
 import SimpleITK as sitk
+
 
 def compute_grid(image_size, dtype=th.float32, device='cpu'):
 
@@ -66,24 +67,29 @@ def upsample_displacement(displacement, new_size, interpolation="linear"):
     """
     dim = displacement.size()[-1]
     if dim == 2:
-        displacement = th.transpose(displacement.unsqueeze(0), 0, 3).unsqueeze(0)
+        displacement = th.transpose(
+            displacement.unsqueeze(0), 0, 3).unsqueeze(0)
         if interpolation == 'linear':
             interpolation = 'bilinear'
         else:
             interpolation = 'nearest'
     elif dim == 3:
-        displacement = th.transpose(displacement.unsqueeze(0), 0, 4).unsqueeze(0)
+        displacement = th.transpose(
+            displacement.unsqueeze(0), 0, 4).unsqueeze(0)
         if interpolation == 'linear':
             interpolation = 'trilinear'
         else:
             interpolation = 'nearest'
 
-    upsampled_displacement = F.interpolate(displacement[..., 0], size=new_size, mode=interpolation, align_corners=False)
+    upsampled_displacement = F.interpolate(
+        displacement[..., 0], size=new_size, mode=interpolation, align_corners=False)
 
     if dim == 2:
-        upsampled_displacement = th.transpose(upsampled_displacement.unsqueeze(-1), 1, -1)
+        upsampled_displacement = th.transpose(
+            upsampled_displacement.unsqueeze(-1), 1, -1)
     elif dim == 3:
-        upsampled_displacement = th.transpose(upsampled_displacement.unsqueeze(-1), 1, -1)
+        upsampled_displacement = th.transpose(
+            upsampled_displacement.unsqueeze(-1), 1, -1)
 
     return upsampled_displacement[0, 0, ...]
 
@@ -91,6 +97,8 @@ def upsample_displacement(displacement, new_size, interpolation="linear"):
 """
     Warp image with displacement
 """
+
+
 def warp_image(image, displacement):
 
     image_size = image.size
@@ -106,6 +114,8 @@ def warp_image(image, displacement):
 """
     Convert displacement to a unit displacement
 """
+
+
 def displacement_to_unit_displacement(displacement):
     # scale displacements from image
     # domain to 2square
@@ -124,6 +134,8 @@ def displacement_to_unit_displacement(displacement):
 """
     Convert a unit displacement to a displacement field with the right spacing/scale
 """
+
+
 def unit_displacement_to_displacement(displacement):
     # scale displacements from 2square
     # domain to image domain
@@ -139,26 +151,34 @@ def unit_displacement_to_displacement(displacement):
 
     return displacement
 
+
 def get_displacement_itk(displacement, refIm):
     displacement = displacement.detach().clone()
     dim = len(displacement.shape) - 1
     unit_displacement_to_displacement(displacement)
     dispIm = sitk.GetImageFromArray(
-        displacement.cpu().numpy().astype('float64')\
-        .transpose(list(range(dim-1, -1, -1)) + [dim])[..., ::-1],  # simpleitk image in numpy: D, H, W
+        displacement.cpu().numpy().astype('float64')
+        # simpleitk image in numpy: D, H, W
+        .transpose(list(range(dim-1, -1, -1)) + [dim])[..., ::-1],
         isVector=True
     )
     dispIm.CopyInformation(refIm)
     trans = sitk.DisplacementFieldTransform(dispIm)
     return trans
 
+
 """
     Create a 3d rotation matrix
 """
+
+
 def rotation_matrix(phi_x, phi_y, phi_z, dtype=th.float32, device='cpu', homogene=False):
-    R_x = th.Tensor([[1, 0, 0], [0, th.cos(phi_x), -th.sin(phi_x)], [0, th.sin(phi_x), th.cos(phi_x)]])
-    R_y = th.Tensor([[th.cos(phi_y), 0, th.sin(phi_y)], [0, 1, 0], [-th.sin(phi_y), 0, th.cos(phi_y)]])
-    R_z = th.Tensor([[th.cos(phi_z), -th.sin(phi_z), 0], [th.sin(phi_z), th.cos(phi_z), 0], [0, 0, 1]])
+    R_x = th.Tensor([[1, 0, 0], [0, th.cos(phi_x), -th.sin(phi_x)],
+                    [0, th.sin(phi_x), th.cos(phi_x)]])
+    R_y = th.Tensor([[th.cos(phi_y), 0, th.sin(phi_y)], [
+                    0, 1, 0], [-th.sin(phi_y), 0, th.cos(phi_y)]])
+    R_z = th.Tensor([[th.cos(phi_z), -th.sin(phi_z), 0],
+                    [th.sin(phi_z), th.cos(phi_z), 0], [0, 0, 1]])
 
     matrix = th.mm(th.mm(R_z, R_y), R_x).to(dtype=dtype, device=device)
 
@@ -184,6 +204,7 @@ class Diffeomorphic():
               Tom Vercauterena et al., 2008
 
     """
+
     def __init__(self, image_size=None, scaling=10, dtype=th.float32, device='cpu'):
 
         self._dtype = dtype
@@ -194,13 +215,15 @@ class Diffeomorphic():
         self._init_scaling = 8
 
         if image_size is not None:
-            self._image_grid = compute_grid(image_size, dtype=dtype, device=device)
+            self._image_grid = compute_grid(
+                image_size, dtype=dtype, device=device)
         else:
             self._image_grid = None
 
     def set_image_size(self, image_szie):
         self._image_size = image_szie
-        self._image_grid = compute_grid(self._image_size, dtype=self._dtype, device=self._device)
+        self._image_grid = compute_grid(
+            self._image_size, dtype=self._dtype, device=self._device)
 
     def calculate(self, displacement):
         if self._dim == 2:
@@ -229,11 +252,13 @@ class Diffeomorphic():
 
         displacement = displacement / (2 ** scaling)
 
-        displacement = displacement.transpose(2, 1).transpose(1, 0).unsqueeze(0)
+        displacement = displacement.transpose(
+            2, 1).transpose(1, 0).unsqueeze(0)
 
         for i in range(scaling):
             displacement_trans = displacement.transpose(1, 2).transpose(2, 3)
-            displacement = displacement + F.grid_sample(displacement, displacement_trans + grid)
+            displacement = displacement + \
+                F.grid_sample(displacement, displacement_trans + grid)
 
         return displacement.transpose(1, 2).transpose(2, 3).squeeze()
 
@@ -241,13 +266,13 @@ class Diffeomorphic():
     def diffeomorphic_3D(displacement, grid, scaling=-1):
         displacement = displacement / (2 ** scaling)
 
-        displacement = displacement.transpose(3, 2).transpose(2, 1).transpose(0, 1).unsqueeze(0)
+        displacement = displacement.transpose(
+            3, 2).transpose(2, 1).transpose(0, 1).unsqueeze(0)
 
         for i in range(scaling):
-            displacement_trans = displacement.transpose(1, 2).transpose(2, 3).transpose(3, 4)
-            displacement = displacement + F.grid_sample(displacement, displacement_trans + grid)
+            displacement_trans = displacement.transpose(
+                1, 2).transpose(2, 3).transpose(3, 4)
+            displacement = displacement + \
+                F.grid_sample(displacement, displacement_trans + grid)
 
         return displacement.transpose(1, 2).transpose(2, 3).transpose(3, 4).squeeze()
-
-
-
