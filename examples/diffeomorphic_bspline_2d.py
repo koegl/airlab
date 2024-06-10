@@ -41,22 +41,6 @@ sys.stderr = open(os.devnull, 'w')
 torch.autograd.set_detect_anomaly(True)
 
 
-def print_2d_tensor(tensor):
-    """
-    Print a 2D tensor in a readable format.
-
-    Args:
-    tensor (torch.Tensor): The 2D tensor to print.
-    """
-    if tensor.dim() != 2:
-        raise ValueError("The input tensor must be 2-dimensional")
-
-    # Convert to NumPy array if it's a PyTorch tensor
-    tensor = tensor.cpu().detach().numpy()
-    for row in tensor:
-        print(" ".join(f"{elem:.4f}" for elem in row))
-
-
 def _get_image_pair(path_fixed: Path, path_moving: Path, dtype, device):
 
     # load the images
