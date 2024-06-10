@@ -290,7 +290,7 @@ class FeatureSpaceMSE:
             fixed * moving) / (torch.sqrt(torch.sum(fixed**2) * torch.sum(moving**2)) + 1e-10)
         return ncc
 
-    def loss(self, fixed, warped):
+    def loss(self, fixed, warped, dino_upscale_factor):
         features_fixed = self.feature_extractor.compute_features(
             fixed)
         features_warped = self.feature_extractor.compute_features(warped)
@@ -319,7 +319,8 @@ class FeatureSpaceMSE:
             shape_f_moving = int(np.sqrt(
                 features_warped.shape[0]))
 
-            factors = [1/3, 1/3]
+            factors = [1/dino_upscale_factor,
+                       1/dino_upscale_factor]
             fixed = F.interpolate(fixed.unsqueeze(0).unsqueeze(0),
                                   scale_factor=factors,
                                   mode='bilinear').squeeze()
@@ -327,28 +328,39 @@ class FeatureSpaceMSE:
                                    scale_factor=factors,
                                    mode='bilinear').squeeze()
 
-            plt.subplot(221)
+            plt.subplot(231)
             plt.imshow(fixed.squeeze().detach().cpu().numpy(), cmap='gray')
             plt.title('Fixed')
 
-            plt.subplot(222)
+            plt.subplot(232)
             plt.imshow(features_fixed.view(shape_f_fixed,
                                            shape_f_fixed).detach().cpu().numpy())
             plt.title('Features Fixed')
 
-            plt.subplot(223)
+            plt.subplot(233)
             plt.imshow(warped.squeeze().detach().cpu().numpy(), cmap='gray')
             plt.title('Warped')
 
-            plt.subplot(224)
+            plt.subplot(234)
             plt.imshow(features_warped.view(shape_f_moving,
                                             shape_f_moving).detach().cpu().numpy())
             plt.title('Features Warped')
 
+            plt.subplot(235)
+            plt.imshow(
+                (fixed - warped).squeeze().detach().cpu().numpy(), cmap='gray')
+            plt.title('Fixed - Warped')
+
+            plt.subplot(236)
+            plt.imshow(((1 - features_fixed) - features_warped).view(shape_f_fixed,
+                                                                     shape_f_fixed).detach().cpu().numpy())
+            plt.title('Features Fixed - Features Warped')
+
             plt.savefig(
                 f"/u/home/koeglf/Documents/code/airlab/tmp/zwischen_{self.i}_{loss:.4f}.jpg")
             plt.close()
-            self.i += 1
+
+        self.i += 1
 
         if loss_inverted < loss:
             loss = loss_inverted
@@ -383,16 +395,19 @@ class Dino(_PairwiseImageLoss):
         moving = self.warped_moving_image
         fixed = self._fixed_image.image
 
+        dino_upscale_factor = 5
+
         # upsample both with torch
-        val = 3
-        scale_factor = [val, val]
+        scale_factor = [dino_upscale_factor,
+                        dino_upscale_factor]
 
         fixed = F.interpolate(
             self._fixed_image.image, scale_factor=scale_factor, mode='bilinear').squeeze()
         moving = F.interpolate(
             self.warped_moving_image, scale_factor=scale_factor, mode='bilinear').squeeze()
 
-        return_val2 = self.loss(fixed, moving) * self._weight
+        return_val2 = self.loss(
+            fixed, moving, dino_upscale_factor) * self._weight
 
         return return_val2
 

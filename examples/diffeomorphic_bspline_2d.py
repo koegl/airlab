@@ -60,15 +60,15 @@ def print_2d_tensor(tensor):
 def _get_image_pair(path_fixed: Path, path_moving: Path, dtype, device):
 
     # load the images
-    fac = 1
-    # image_fixed = np.array(Image.open(
-    #     path_fixed).convert('L').resize((28*fac, 28*fac)))
-    # image_moving = np.array(Image.open(
-    #     path_moving).convert('L').resize((28*fac, 28*fac)))
+    fac = 4
     image_fixed = np.array(Image.open(
-        path_fixed).convert('L'))
+        path_fixed).convert('L').resize((28*fac, 28*fac)))
     image_moving = np.array(Image.open(
-        path_moving).convert('L'))
+        path_moving).convert('L').resize((28*fac, 28*fac)))
+    # image_fixed = np.array(Image.open(
+    #     path_fixed).convert('L'))
+    # image_moving = np.array(Image.open(
+    #     path_moving).convert('L'))
 
     # min max normalization 0-1
     image_fixed = (image_fixed - np.min(image_fixed)) / \
@@ -90,31 +90,30 @@ def main():
 
     # set the used data type
     dtype = th.float32
-    # set the device for the computaion to CPU
-    device = th.device("cpu")
-
-    # In order to use a GPU uncomment the following line. The number is the device index of the used GPU
-    # Here, the GPU with the index 0 is used.
+    # device = th.device("cpu")
     device = th.device("cuda:0")
 
-    fixed_image, moving_image = _get_image_pair("//u/home/koeglf/Documents/brains/brain_fixed.png",
-                                                "/u/home/koeglf/Documents/brains/brain_moving.png",
+    fixed_image, moving_image = _get_image_pair("/u/home/koeglf/Documents/code/airlab/airlab/data/fixed.png",
+                                                "/u/home/koeglf/Documents/code/airlab/airlab/data/moving.png",
                                                 dtype,
                                                 device)
-    regularisation_weight = 1000
-    number_of_iterations = 100
+
+    regularisation_weight = 10
+    number_of_iterations = 50
 
     sigma = [15, 15]
 
     registration = al.PairwiseRegistration(verbose=True)
 
     # define the transformation
-    transformation = al.transformation.pairwise.BsplineTransformation(moving_image.size,
-                                                                      sigma=sigma,
-                                                                      order=1,
-                                                                      dtype=dtype,
-                                                                      device=device,
-                                                                      diffeomorphic=True)
+    transformation = al.transformation.pairwise.RigidTransformation(
+        moving_image)
+    # transformation = al.transformation.pairwise.BsplineTransformation(moving_image.size,
+    #                                                                   sigma=sigma,
+    #                                                                   order=1,
+    #                                                                   dtype=dtype,
+    #                                                                   device=device,
+    #                                                                   diffeomorphic=True)
 
     registration.set_transformation(transformation)
 
@@ -132,7 +131,7 @@ def main():
 
     # define the optimizer
     optimizer = th.optim.Adam(
-        transformation.parameters(), lr=0.01)
+        transformation.parameters(), lr=0.005)
 
     registration.set_optimizer(optimizer)
     registration.set_number_of_iterations(number_of_iterations)

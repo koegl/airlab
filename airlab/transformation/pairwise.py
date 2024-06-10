@@ -114,6 +114,226 @@ class _Transformation(th.nn.Module):
             return flow + self._constant_flow
 
 
+class RigidTransformation(_Transformation):
+    r"""
+    Rigid centred transformation for 2D and 3D.
+
+    Args:
+        moving_image (Image): moving image for the registration
+        opt_cm (bool): using center of as parameter for the optimisation
+    """
+
+    def __init__(self, moving_image, opt_cm=False):
+        super(RigidTransformation, self).__init__(image_size=moving_image.size,
+                                                  dtype=moving_image.dtype,
+                                                  device=moving_image.device)
+
+        self._opt_cm = opt_cm
+
+        grid = th.squeeze(tu.compute_grid(
+            moving_image.size, dtype=self._dtype))
+
+        grid = th.cat((grid, th.ones(*[list(moving_image.size) + [1]], dtype=self._dtype)), self._dim)\
+            .to(device=self._device)
+
+        self.register_buffer("_grid", grid)
+
+        # compute the initial center of mass of the moving image
+        intensity_sum = th.sum(moving_image.image)
+
+        self._center_mass_x = th.sum(
+            moving_image.image.squeeze() * self._grid[..., 0]) / intensity_sum
+        self._center_mass_y = th.sum(
+            moving_image.image.squeeze() * self._grid[..., 1]) / intensity_sum
+
+        self._phi_z = Parameter(th.tensor(0.0))
+        self._t_x = Parameter(th.tensor(0.0))
+        self._t_y = Parameter(th.tensor(0.0))
+
+        self._trans_matrix_pos = None
+        self._trans_matrix_cm = None
+        self._trans_matrix_cm_rw = None
+        self._rotation_matrix = None
+
+        if self._opt_cm:
+            self._center_mass_x = Parameter(self._center_mass_x)
+            self._center_mass_y = Parameter(self._center_mass_y)
+
+        if self._dim == 2:
+            self._compute_transformation = self._compute_transformation_2d
+
+        else:
+            self._compute_transformation = self._compute_transformation_3d
+
+            self._center_mass_z = th.sum(
+                moving_image.image.squeeze() * self._grid[..., 2]) / intensity_sum
+
+            self._t_z = Parameter(th.tensor(0.0))
+            self._phi_x = Parameter(th.tensor(0.0))
+            self._phi_y = Parameter(th.tensor(0.0))
+
+            if self._opt_cm:
+                self._center_mass_z = Parameter(self._center_mass_z)
+
+    def init_translation(self, fixed_image):
+        r"""
+        Initialize the translation parameters with the difference between the center of mass of the
+        fixed and the moving image
+
+        Args:
+            fixed_image (Image): Fixed image for the registration
+        """
+        intensity_sum = th.sum(fixed_image.image)
+
+        fixed_image_center_mass_x = th.sum(
+            fixed_image.image.squeeze() * self._grid[..., 0]) / intensity_sum
+        fixed_image_center_mass_y = th.sum(
+            fixed_image.image.squeeze() * self._grid[..., 1]) / intensity_sum
+
+        self._t_x = Parameter(self._center_mass_x - fixed_image_center_mass_x)
+        self._t_y = Parameter(self._center_mass_y - fixed_image_center_mass_y)
+
+        if self._dim == 3:
+            fixed_image_center_mass_z = th.sum(
+                fixed_image.image.squeeze() * self._grid[..., 2]) / intensity_sum
+            self._t_z = Parameter(self._center_mass_z -
+                                  fixed_image_center_mass_z)
+
+    @property
+    def transformation_matrix(self):
+        return self._compute_transformation_matrix()
+
+    def set_parameters(self, t, phi, rotation_center=None):
+        """
+        Set parameters manually
+
+        t (array): 2 or 3 dimensional array specifying the spatial translation
+        phi (array): 1 or 3 dimensional array specifying the rotation angles
+        rotation_center (array): 2 or 3 dimensional array specifying the rotation center (default is zeros)
+        """
+        self._t_x = Parameter(th.tensor(t[0]).to(
+            dtype=self._dtype, device=self._device))
+        self._t_y = Parameter(th.tensor(t[1]).to(
+            dtype=self._dtype, device=self._device))
+        self._phi_z = Parameter(th.tensor(phi[0]).to(
+            dtype=self._dtype, device=self._device))
+
+        if rotation_center is not None:
+            self._center_mass_x = rotation_center[0]
+            self._center_mass_y = rotation_center[1]
+
+        if len(t) == 2:
+            self._compute_transformation_2d()
+        else:
+            self._t_z = Parameter(th.tensor(t[2]).to(
+                dtype=self._dtype, device=self._device))
+            self._phi_x = Parameter(th.tensor(phi[1]).to(
+                dtype=self._dtype, device=self._device))
+            self._phi_y = Parameter(th.tensor(phi[2]).to(
+                dtype=self._dtype, device=self._device))
+            if rotation_center is not None:
+                self._center_mass_z = rotation_center[1]
+
+            self._compute_transformation_3d()
+
+    def _compute_transformation_2d(self):
+
+        self._trans_matrix_pos = th.diag(
+            th.ones(self._dim + 1, dtype=self._dtype, device=self._device))
+        self._trans_matrix_cm = th.diag(
+            th.ones(self._dim + 1, dtype=self._dtype, device=self._device))
+        self._trans_matrix_cm_rw = th.diag(
+            th.ones(self._dim + 1, dtype=self._dtype, device=self._device))
+        self._rotation_matrix = th.zeros(
+            self._dim + 1, self._dim + 1, dtype=self._dtype, device=self._device)
+        self._rotation_matrix[-1, -1] = 1
+
+        self._trans_matrix_pos[0, 2] = self._t_x
+        self._trans_matrix_pos[1, 2] = self._t_y
+
+        self._trans_matrix_cm[0, 2] = -self._center_mass_x
+        self._trans_matrix_cm[1, 2] = -self._center_mass_y
+
+        self._trans_matrix_cm_rw[0, 2] = self._center_mass_x
+        self._trans_matrix_cm_rw[1, 2] = self._center_mass_y
+
+        self._rotation_matrix[0, 0] = th.cos(self._phi_z)
+        self._rotation_matrix[0, 1] = -th.sin(self._phi_z)
+        self._rotation_matrix[1, 0] = th.sin(self._phi_z)
+        self._rotation_matrix[1, 1] = th.cos(self._phi_z)
+
+    def _compute_transformation_3d(self):
+
+        self._trans_matrix_pos = th.diag(
+            th.ones(self._dim + 1, dtype=self._dtype, device=self._device))
+        self._trans_matrix_cm = th.diag(
+            th.ones(self._dim + 1, dtype=self._dtype, device=self._device))
+        self._trans_matrix_cm_rw = th.diag(
+            th.ones(self._dim + 1, dtype=self._dtype, device=self._device))
+
+        self._trans_matrix_pos[0, 3] = self._t_x
+        self._trans_matrix_pos[1, 3] = self._t_y
+        self._trans_matrix_pos[2, 3] = self._t_z
+
+        self._trans_matrix_cm[0, 3] = -self._center_mass_x
+        self._trans_matrix_cm[1, 3] = -self._center_mass_y
+        self._trans_matrix_cm[2, 3] = -self._center_mass_z
+
+        self._trans_matrix_cm_rw[0, 3] = self._center_mass_x
+        self._trans_matrix_cm_rw[1, 3] = self._center_mass_y
+        self._trans_matrix_cm_rw[2, 3] = self._center_mass_z
+
+        R_x = th.diag(
+            th.ones(self._dim + 1, dtype=self._dtype, device=self._device))
+        R_x[1, 1] = th.cos(self._phi_x)
+        R_x[1, 2] = -th.sin(self._phi_x)
+        R_x[2, 1] = th.sin(self._phi_x)
+        R_x[2, 2] = th.cos(self._phi_x)
+
+        R_y = th.diag(
+            th.ones(self._dim + 1, dtype=self._dtype, device=self._device))
+        R_y[0, 0] = th.cos(self._phi_y)
+        R_y[0, 2] = th.sin(self._phi_y)
+        R_y[2, 0] = -th.sin(self._phi_y)
+        R_y[2, 2] = th.cos(self._phi_y)
+
+        R_z = th.diag(
+            th.ones(self._dim + 1, dtype=self._dtype, device=self._device))
+        R_z[0, 0] = th.cos(self._phi_z)
+        R_z[0, 1] = -th.sin(self._phi_z)
+        R_z[1, 0] = th.sin(self._phi_z)
+        R_z[1, 1] = th.cos(self._phi_z)
+
+        self._rotation_matrix = th.mm(th.mm(R_z, R_y), R_x)
+
+    def _compute_transformation_matrix(self):
+        transformation_matrix = th.mm(th.mm(th.mm(self._trans_matrix_pos, self._trans_matrix_cm),
+                                            self._rotation_matrix), self._trans_matrix_cm_rw)[0:self._dim, :]
+        return transformation_matrix
+
+    def _compute_dense_flow(self, transformation_matrix):
+
+        displacement = th.mm(self._grid.view(np.prod(self._image_size).tolist(), self._dim + 1),
+                             transformation_matrix.t()).view(*(self._image_size.tolist()), self._dim) \
+            - self._grid[..., :self._dim]
+        return displacement
+
+    def print(self):
+        for name, param in self.named_parameters():
+            print(name, param.item())
+
+    def compute_displacement(self, transformation_matrix):
+        return self._compute_dense_flow(transformation_matrix)
+
+    def forward(self):
+
+        self._compute_transformation()
+        transformation_matrix = self._compute_transformation_matrix()
+        flow = self._compute_dense_flow(transformation_matrix)
+
+        return self._concatenate_flows(flow)
+
+
 """
     Base class for kernel transformations
 """
