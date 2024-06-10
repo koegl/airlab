@@ -113,7 +113,7 @@ class _PairwiseImageLoss(torch.nn.modules.Module):
             return tensor*self._weight
 
 
-class FeatureSpaceMSE:
+class FeatureSpaceMI:
     """
     Mean squared error loss of the features.
     """
@@ -260,36 +260,6 @@ class FeatureSpaceMSE:
 
         return mi_score
 
-    def mse(self, fixed, moving):
-        """
-        Compute the mean squared error between two images.
-
-        Args:
-        - fixed (torch.Tensor): The fixed image.
-        - moving (torch.Tensor): The moving image.
-
-        Returns:
-        - mse (torch.Tensor): The mean squared error.
-        """
-        return torch.mean((fixed - moving)**2)
-
-    def ncc(self, fixed, moving):
-        """
-        Compute the normalized cross-correlation between two images.
-
-        Args:
-        - fixed (torch.Tensor): The fixed image.
-        - moving (torch.Tensor): The moving image.
-
-        Returns:
-        - ncc (torch.Tensor): The normalized cross-correlation.
-        """
-        fixed = fixed - torch.mean(fixed)
-        moving = moving - torch.mean(moving)
-        ncc = torch.sum(
-            fixed * moving) / (torch.sqrt(torch.sum(fixed**2) * torch.sum(moving**2)) + 1e-10)
-        return ncc
-
     def loss(self, fixed, warped, dino_upscale_factor):
         features_fixed = self.feature_extractor.compute_features(
             fixed)
@@ -305,66 +275,7 @@ class FeatureSpaceMSE:
         features_warped = self.feature_extractor.min_max_normalization(
             features_warped)
 
-        loss = self.mse(features_fixed, features_warped)
-        # loss = - self.mi(features_fixed.flatten(), features_warped.flatten())
-        # loss = - self.ncc(features_fixed, features_warped)
-
-        inverted_features_fixed = 1 - features_fixed
-        loss_inverted = self.mse(inverted_features_fixed, features_warped)
-
-        def vis(features_fixed, features_warped, fixed, warped, loss):
-            import numpy as np
-            shape_f_fixed = int(np.sqrt(
-                features_fixed.shape[0]))
-            shape_f_moving = int(np.sqrt(
-                features_warped.shape[0]))
-
-            factors = [1/dino_upscale_factor,
-                       1/dino_upscale_factor]
-            fixed = F.interpolate(fixed.unsqueeze(0).unsqueeze(0),
-                                  scale_factor=factors,
-                                  mode='bilinear').squeeze()
-            warped = F.interpolate(warped.unsqueeze(0).unsqueeze(0),
-                                   scale_factor=factors,
-                                   mode='bilinear').squeeze()
-
-            plt.subplot(231)
-            plt.imshow(fixed.squeeze().detach().cpu().numpy(), cmap='gray')
-            plt.title('Fixed')
-
-            plt.subplot(232)
-            plt.imshow(features_fixed.view(shape_f_fixed,
-                                           shape_f_fixed).detach().cpu().numpy())
-            plt.title('Features Fixed')
-
-            plt.subplot(233)
-            plt.imshow(warped.squeeze().detach().cpu().numpy(), cmap='gray')
-            plt.title('Warped')
-
-            plt.subplot(234)
-            plt.imshow(features_warped.view(shape_f_moving,
-                                            shape_f_moving).detach().cpu().numpy())
-            plt.title('Features Warped')
-
-            plt.subplot(235)
-            plt.imshow(
-                (fixed - warped).squeeze().detach().cpu().numpy(), cmap='gray')
-            plt.title('Fixed - Warped')
-
-            plt.subplot(236)
-            plt.imshow(((1 - features_fixed) - features_warped).view(shape_f_fixed,
-                                                                     shape_f_fixed).detach().cpu().numpy())
-            plt.title('Features Fixed - Features Warped')
-
-            plt.savefig(
-                f"/u/home/koeglf/Documents/code/airlab/tmp/zwischen_{self.i}_{loss:.4f}.jpg")
-            plt.close()
-
-        self.i += 1
-
-        if loss_inverted < loss:
-            loss = loss_inverted
-            vis(features_fixed, features_warped, fixed, warped, loss)
+        loss = - self.mi(features_fixed.flatten(), features_warped.flatten())
 
         return loss
 
@@ -381,7 +292,7 @@ class Dino(_PairwiseImageLoss):
 
         self.feature_extractor = FeatureExtractor.FeatureExtractor("DINOv2", self._device, {
                                                                    "slice_dist": 0})
-        self.loss = FeatureSpaceMSE(self.feature_extractor).loss
+        self.loss = FeatureSpaceMI(self.feature_extractor).loss
 
     def forward(self, displacement):
 
