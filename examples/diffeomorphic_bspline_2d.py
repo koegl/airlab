@@ -60,15 +60,15 @@ def print_2d_tensor(tensor):
 def _get_image_pair(path_fixed: Path, path_moving: Path, dtype, device):
 
     # load the images
-    fac = 8
-    image_fixed = np.array(Image.open(
-        path_fixed).convert('L').resize((28*fac, 28*fac)))
-    image_moving = np.array(Image.open(
-        path_moving).convert('L').resize((28*fac, 28*fac)))
+    fac = 1
     # image_fixed = np.array(Image.open(
-    #     path_fixed).convert('L'))
+    #     path_fixed).convert('L').resize((28*fac, 28*fac)))
     # image_moving = np.array(Image.open(
-    #     path_moving).convert('L'))
+    #     path_moving).convert('L').resize((28*fac, 28*fac)))
+    image_fixed = np.array(Image.open(
+        path_fixed).convert('L'))
+    image_moving = np.array(Image.open(
+        path_moving).convert('L'))
 
     # min max normalization 0-1
     image_fixed = (image_fixed - np.min(image_fixed)) / \
@@ -97,67 +97,47 @@ def main():
     # Here, the GPU with the index 0 is used.
     device = th.device("cuda:0")
 
-    fixed_image, moving_image = _get_image_pair("/data/mnist/trainingSample/img_5.jpg",
-                                                "/data/mnist/trainingSample/img_1.jpg",
+    fixed_image, moving_image = _get_image_pair("//u/home/koeglf/Documents/brains/brain_fixed.png",
+                                                "/u/home/koeglf/Documents/brains/brain_moving.png",
                                                 dtype,
                                                 device)
+    regularisation_weight = 1000
+    number_of_iterations = 100
 
-    # create image pyramide size/4, size/2, size/1
-    fixed_image_pyramid = al.create_image_pyramid(
-        fixed_image, [[4, 4], [2, 2]])
-    moving_image_pyramid = al.create_image_pyramid(
-        moving_image, [[4, 4], [2, 2]])
+    sigma = [15, 15]
 
-    regularisation_weight = [10, 50, 500]
-    number_of_iterations = list(np.array([3, 3, 3]) * 32)
-    # number_of_iterations = [1, 1, 1]
+    registration = al.PairwiseRegistration(verbose=True)
 
-    # sigma = [[8, 8], [4, 4], [2, 2]]
-    sigma = [[20, 20], [30, 30], [40, 40]]
+    # define the transformation
+    transformation = al.transformation.pairwise.BsplineTransformation(moving_image.size,
+                                                                      sigma=sigma,
+                                                                      order=1,
+                                                                      dtype=dtype,
+                                                                      device=device,
+                                                                      diffeomorphic=True)
 
-    for level, (mov_im_level, fix_im_level) in enumerate(zip(moving_image_pyramid, fixed_image_pyramid)):
+    registration.set_transformation(transformation)
 
-        registration = al.PairwiseRegistration(verbose=True)
+    # choose the Mean Squared Error as image loss
+    # image_loss = al.loss.pairwise.MSE(fixed_image, moving_image)
+    image_loss = al.loss.pairwise.Dino(fixed_image, moving_image)
 
-        # define the transformation
-        transformation = al.transformation.pairwise.BsplineTransformation(mov_im_level.size,
-                                                                          sigma=sigma[level],
-                                                                          order=1,
-                                                                          dtype=dtype,
-                                                                          device=device,
-                                                                          diffeomorphic=True)
+    registration.set_image_loss([image_loss])
 
-        if level > 0:
-            constant_flow = al.transformation.utils.upsample_displacement(constant_flow,
-                                                                          mov_im_level.size,
-                                                                          interpolation="linear")
-            transformation.set_constant_flow(constant_flow)
+    # define the regulariser for the displacement
+    regulariser = al.regulariser.displacement.DiffusionRegulariser(
+        moving_image.spacing)
+    regulariser.SetWeight(regularisation_weight)
+    registration.set_regulariser_displacement([regulariser])
 
-        registration.set_transformation(transformation)
+    # define the optimizer
+    optimizer = th.optim.Adam(
+        transformation.parameters(), lr=0.01)
 
-        # choose the Mean Squared Error as image loss
-        # image_loss = al.loss.pairwise.MSE(fix_im_level, mov_im_level)
-        image_loss = al.loss.pairwise.Dino(fix_im_level, mov_im_level)
+    registration.set_optimizer(optimizer)
+    registration.set_number_of_iterations(number_of_iterations)
 
-        registration.set_image_loss([image_loss])
-
-        # define the regulariser for the displacement
-        regulariser = al.regulariser.displacement.DiffusionRegulariser(
-            mov_im_level.spacing)
-        regulariser.SetWeight(regularisation_weight[level])
-        registration.set_regulariser_displacement([regulariser])
-
-        # define the optimizer
-        # , lr=10000000000)
-        optimizer = th.optim.Adam(
-            transformation.parameters(), lr=0.001)
-
-        registration.set_optimizer(optimizer)
-        registration.set_number_of_iterations(number_of_iterations[level])
-
-        registration.start()
-
-        constant_flow = transformation.get_flow()
+    registration.start()
 
     # create final result
     displacement = transformation.get_displacement()
@@ -166,42 +146,9 @@ def main():
     displacement = al.create_displacement_image_from_image(
         displacement, moving_image)
 
-    end = time.time()
-
-    print("=================================================================")
-
-    print("Registration done in: ", end - start)
-
-    new_disp = transformation.get_displacement().detach().cpu().numpy().squeeze()
-
-    # tre_after = mu.tre(points_fixed,
-    #                    points_moving,
-    #                    new_disp,
-    #                    [1, 1])
-
-    # print(
-    #     f"TRE before:\t\tmin: {tre_before.min():.4f}\tmax: {tre_before.max():.4f}\tmean: {tre_before.mean():.4f}")
-    # print(
-    #     f"TRE after:\t\tmin: {tre_after.min():.4f}\tmax: {tre_after.max():.4f}\tmean: {tre_after.mean():.4f}")
-    # improvement_min = (tre_before.mean() - tre_after.mean()
-    #                    ) / tre_before.mean() * 100
-    # improvement_max = (tre_before.max() - tre_after.max()) / \
-    #     tre_before.max() * 100
-    # improvement_mean = (tre_before.mean() - tre_after.mean()
-    #                     ) / tre_before.mean() * 100
-    # print(
-    #     f"TRE improvements:\tmin: {improvement_min:.4f}%\tmax: {improvement_max:.4f}%\tmean: {improvement_mean:.4f}%")
-
-    # mu.plot_all_registration_results("/home/fryderyk/Documents/fig.jpg",
-    #                                  moving_image.numpy(),
-    #                                  fixed_image.numpy(),
-    #                                  warped_image.numpy(),
-    #                                  new_disp,
-    #                                  moving_keypoints=points_moving,
-    #                                  fixed_keypoints=points_fixed,
-    #                                  pred_keypoints=mu.deform_landmarks(points_moving, new_disp))
-
     # plot the results
+    plt.figure(figsize=(12, 6))
+
     plt.subplot(231)
     plt.imshow(fixed_image.numpy(), cmap='gray')
     plt.title('Fixed Image')
@@ -222,6 +169,7 @@ def main():
     plt.subplot(235)
     plt.imshow(displacement.magnitude().numpy(), cmap='jet')
     plt.title('Magnitude Displacement')
+    plt.colorbar(shrink=0.9)  # Decrease the size of the colorbar
 
     # plot the results
     plt.subplot(236)
@@ -229,10 +177,19 @@ def main():
                cmap='gray', vmin=-0.5, vmax=0.5)
     plt.title('Difference Fixed - Warped')
 
+    # Increase horizontal distance between subplots
+    plt.subplots_adjust(wspace=0.1, hspace=0.3)
+
     plt.show()
 
     plt.savefig(
         "/u/home/koeglf/Documents/code/airlab/tmp/resulting_registration.jpg")
+
+    end = time.time()
+
+    print("=================================================================")
+
+    print("Registration done in: ", end - start)
 
     x = 0
 
