@@ -113,16 +113,16 @@ class _PairwiseImageLoss(torch.nn.modules.Module):
             return tensor*self._weight
 
 
-class FeatureSpaceMSE:
+class FeatureSpaceMI:
     """
     Mean squared error loss of the features.
     """
 
     def __init__(self, feature_extractor: FeatureExtractor.FeatureExtractor):
         self.feature_extractor = feature_extractor
-        self.f_true = None
+        self.i = 0
 
-    def pca(self, X, k=2):
+    def pca(self, X: torch.Tensor, k: int) -> torch.Tensor:
         """
         Perform PCA on the input data X.
 
@@ -160,7 +160,10 @@ class FeatureSpaceMSE:
 
         return projected
 
-    def mi(self, fixed, moving, num_bins=32, min_val=0.0, max_val=1.0):
+    def mi(self,
+           fixed: torch.Tensor,
+           moving: torch.Tensor,
+           num_bins: int = 32) -> torch.Tensor:
         """
             Compute the mutual information between two images.
 
@@ -168,8 +171,6 @@ class FeatureSpaceMSE:
             - fixed (torch.Tensor): The fixed image.
             - moving (torch.Tensor): The moving image.
             - num_bins (int): The number of bins in the histogram.
-            - min_val (float): Minimum value of the intensity.
-            - max_val (float): Maximum value of the intensity.
 
             Returns:
             - mi (torch.Tensor): The mutual information.
@@ -260,57 +261,24 @@ class FeatureSpaceMSE:
 
         return mi_score
 
-    def mse(self, fixed, moving):
-        """
-        Compute the mean squared error between two images.
+    def loss(self, fixed: torch.Tensor, warped: torch.Tensor):
+        features_fixed = self.feature_extractor.compute_features(
+            fixed)
+        features_warped = self.feature_extractor.compute_features(warped)
 
-        Args:
-        - fixed (torch.Tensor): The fixed image.
-        - moving (torch.Tensor): The moving image.
+        dims = 1
 
-        Returns:
-        - mse (torch.Tensor): The mean squared error.
-        """
-        return torch.mean((fixed - moving)**2)
+        # features_fixed = self.pca(features_fixed, dims)
+        # features_warped = self.pca(features_warped, dims)
 
-    def ncc(self, fixed, moving):
-        """
-        Compute the normalized cross-correlation between two images.
+        features_fixed = self.feature_extractor.min_max_normalization(
+            features_fixed)
+        features_warped = self.feature_extractor.min_max_normalization(
+            features_warped)
 
-        Args:
-        - fixed (torch.Tensor): The fixed image.
-        - moving (torch.Tensor): The moving image.
+        loss = - self.mi(features_fixed.flatten(), features_warped.flatten())
 
-        Returns:
-        - ncc (torch.Tensor): The normalized cross-correlation.
-        """
-        fixed = fixed - torch.mean(fixed)
-        moving = moving - torch.mean(moving)
-        ncc = torch.sum(
-            fixed * moving) / (torch.sqrt(torch.sum(fixed**2) * torch.sum(moving**2)) + 1e-10)
-        return ncc
-
-    def loss(self, y_true, y_pred):
-        if self.f_true == None:
-            self.f_true = self.feature_extractor.compute_features(
-                y_true)  # TODO perform feature extraction in torch not np
-        f_pred = self.feature_extractor.compute_features(y_pred)
-
-        fixed = self.f_true
-        moving = f_pred
-
-        dims = 4
-
-        fixed = self.pca(fixed, dims)
-        moving = self.pca(moving, dims)
-
-        mse = self.mse(fixed, moving)
-
-        mi = self.mi(fixed.flatten(), moving.flatten())
-
-        ncc = self.ncc(fixed, moving)
-
-        return mi
+        return loss
 
 
 class Dino(_PairwiseImageLoss):
@@ -325,7 +293,7 @@ class Dino(_PairwiseImageLoss):
 
         self.feature_extractor = FeatureExtractor.FeatureExtractor("DINOv2", self._device, {
                                                                    "slice_dist": 0})
-        self.loss = FeatureSpaceMSE(self.feature_extractor).loss
+        self.loss = FeatureSpaceMI(self.feature_extractor).loss
 
     def forward(self, displacement):
 
@@ -339,9 +307,11 @@ class Dino(_PairwiseImageLoss):
         moving = self.warped_moving_image
         fixed = self._fixed_image.image
 
+        dino_upscale_factor = 5
+
         # upsample both with torch
-        val = 1
-        scale_factor = [val, val]
+        scale_factor = [dino_upscale_factor,
+                        dino_upscale_factor]
 
         fixed = F.interpolate(
             self._fixed_image.image, scale_factor=scale_factor, mode='bilinear').squeeze()
