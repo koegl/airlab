@@ -122,7 +122,7 @@ class FeatureSpaceMI:
         self.feature_extractor = feature_extractor
         self.i = 0
 
-    def pca(self, X, k=2):
+    def pca(self, X: torch.Tensor, k: int) -> torch.Tensor:
         """
         Perform PCA on the input data X.
 
@@ -160,7 +160,10 @@ class FeatureSpaceMI:
 
         return projected
 
-    def mi(self, fixed, moving, num_bins=32, min_val=0.0, max_val=1.0):
+    def mi(self,
+           fixed: torch.Tensor,
+           moving: torch.Tensor,
+           num_bins: int = 32) -> torch.Tensor:
         """
             Compute the mutual information between two images.
 
@@ -168,8 +171,6 @@ class FeatureSpaceMI:
             - fixed (torch.Tensor): The fixed image.
             - moving (torch.Tensor): The moving image.
             - num_bins (int): The number of bins in the histogram.
-            - min_val (float): Minimum value of the intensity.
-            - max_val (float): Maximum value of the intensity.
 
             Returns:
             - mi (torch.Tensor): The mutual information.
@@ -260,15 +261,15 @@ class FeatureSpaceMI:
 
         return mi_score
 
-    def loss(self, fixed, warped, dino_upscale_factor):
+    def loss(self, fixed: torch.Tensor, warped: torch.Tensor):
         features_fixed = self.feature_extractor.compute_features(
             fixed)
         features_warped = self.feature_extractor.compute_features(warped)
 
         dims = 1
 
-        features_fixed = self.pca(features_fixed, dims)
-        features_warped = self.pca(features_warped, dims)
+        # features_fixed = self.pca(features_fixed, dims)
+        # features_warped = self.pca(features_warped, dims)
 
         features_fixed = self.feature_extractor.min_max_normalization(
             features_fixed)
@@ -317,8 +318,7 @@ class Dino(_PairwiseImageLoss):
         moving = F.interpolate(
             self.warped_moving_image, scale_factor=scale_factor, mode='bilinear').squeeze()
 
-        return_val2 = self.loss(
-            fixed, moving, dino_upscale_factor) * self._weight
+        return_val2 = self.loss(fixed, moving) * self._weight
 
         return return_val2
 
