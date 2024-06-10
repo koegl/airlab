@@ -82,7 +82,7 @@ def main():
                                                 dtype,
                                                 device)
 
-    regularisation_weight = 10
+    regularisation_weight = 1000
     number_of_iterations = 50
 
     sigma = [15, 15]
@@ -90,20 +90,23 @@ def main():
     registration = al.PairwiseRegistration(verbose=True)
 
     # define the transformation
-    transformation = al.transformation.pairwise.RigidTransformation(
-        moving_image)
-    # transformation = al.transformation.pairwise.BsplineTransformation(moving_image.size,
-    #                                                                   sigma=sigma,
-    #                                                                   order=1,
-    #                                                                   dtype=dtype,
-    #                                                                   device=device,
-    #                                                                   diffeomorphic=True)
+    # transformation = al.transformation.pairwise.RigidTransformation(
+    # moving_image)
+    transformation = al.transformation.pairwise.BsplineTransformation(moving_image.size,
+                                                                      sigma=sigma,
+                                                                      order=1,
+                                                                      dtype=dtype,
+                                                                      device=device,
+                                                                      diffeomorphic=True)
 
     registration.set_transformation(transformation)
 
     # choose the Mean Squared Error as image loss
     # image_loss = al.loss.pairwise.MSE(fixed_image, moving_image)
-    image_loss = al.loss.pairwise.Dino(fixed_image, moving_image)
+    image_loss = al.loss.pairwise.LatentSpaceFeatureLoss(fixed_image,
+                                                         moving_image,
+                                                         extractor="DINOv2",
+                                                         loss_type="MI")
 
     registration.set_image_loss([image_loss])
 
@@ -115,7 +118,7 @@ def main():
 
     # define the optimizer
     optimizer = th.optim.Adam(
-        transformation.parameters(), lr=0.005)
+        transformation.parameters(), lr=0.01)
 
     registration.set_optimizer(optimizer)
     registration.set_number_of_iterations(number_of_iterations)

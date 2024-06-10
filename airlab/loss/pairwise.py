@@ -15,6 +15,7 @@ import os
 import sys
 
 import torch
+import torchvision
 import torch.nn.functional as F
 
 from .. import transformation as T
@@ -113,52 +114,10 @@ class _PairwiseImageLoss(torch.nn.modules.Module):
             return tensor*self._weight
 
 
-class FeatureSpaceMI:
+class MI:
     """
-    Mean squared error loss of the features.
+    Mutual information.
     """
-
-    def __init__(self, feature_extractor: FeatureExtractor.FeatureExtractor):
-        self.feature_extractor = feature_extractor
-        self.i = 0
-
-    def pca(self, X: torch.Tensor, k: int) -> torch.Tensor:
-        """
-        Perform PCA on the input data X.
-
-        Args:
-        - X (torch.Tensor): The input data matrix of shape (n_samples, n_features).
-        - k (int): The number of principal components to compute.
-
-        Returns:
-        - projected (torch.Tensor): The data projected onto the first k principal components.
-        - components (torch.Tensor): The first k principal components.
-        """
-        # Center the data
-        X_mean = torch.mean(X, dim=0)
-        X_centered = X - X_mean
-
-        # Compute covariance matrix
-        covariance_matrix = torch.mm(
-            X_centered.T, X_centered) / (X_centered.size(0) - 1)
-
-        # Eigen decomposition
-        eigenvalues, eigenvectors = torch.linalg.eig(
-            covariance_matrix)
-        eigenvalues = eigenvalues.real
-        eigenvectors = eigenvectors.real
-
-        # Sort eigenvalues and eigenvectors
-        sorted_indices = torch.argsort(eigenvalues, descending=True)
-        sorted_eigenvectors = eigenvectors[:, sorted_indices]
-
-        # Select the first k principal components
-        components = sorted_eigenvectors[:, :k]
-
-        # Project the data onto the first k principal components
-        projected = torch.mm(X_centered, components)
-
-        return projected
 
     def mi(self,
            fixed: torch.Tensor,
@@ -261,39 +220,30 @@ class FeatureSpaceMI:
 
         return mi_score
 
-    def loss(self, fixed: torch.Tensor, warped: torch.Tensor):
-        features_fixed = self.feature_extractor.compute_features(
-            fixed)
-        features_warped = self.feature_extractor.compute_features(warped)
+    def loss(self, t1: torch.Tensor, t2: torch.Tensor):
 
-        dims = 1
-
-        # features_fixed = self.pca(features_fixed, dims)
-        # features_warped = self.pca(features_warped, dims)
-
-        features_fixed = self.feature_extractor.min_max_normalization(
-            features_fixed)
-        features_warped = self.feature_extractor.min_max_normalization(
-            features_warped)
-
-        loss = - self.mi(features_fixed.flatten(), features_warped.flatten())
+        loss = - self.mi(t1.flatten(), t2.flatten())
 
         return loss
 
 
-class Dino(_PairwiseImageLoss):
+class LatentSpaceFeatureLoss(_PairwiseImageLoss):
 
-    def __init__(self, fixed_image, moving_image, fixed_mask=None, moving_mask=None, size_average=True, reduce=True):
-        super(Dino, self).__init__(fixed_image, moving_image,
-                                   fixed_mask, moving_mask, size_average, reduce)
+    def __init__(self, fixed_image, moving_image, extractor: str, loss_type: str, fixed_mask=None, moving_mask=None, size_average=True, reduce=True):
+        super(LatentSpaceFeatureLoss, self).__init__(fixed_image, moving_image,
+                                                     fixed_mask, moving_mask, size_average, reduce)
 
-        self._name = "Dino"
+        self._name = f"{extractor} with {loss_type} loss"
 
         self.warped_moving_image = None
 
-        self.feature_extractor = FeatureExtractor.FeatureExtractor("DINOv2", self._device, {
+        self.feature_extractor = FeatureExtractor.FeatureExtractor(extractor, self._device, {
                                                                    "slice_dist": 0})
-        self.loss = FeatureSpaceMI(self.feature_extractor).loss
+
+        if loss_type == "MI":
+            self.loss = MI().loss
+        else:
+            raise ValueError("Loss type not supported")
 
     def forward(self, displacement):
 
@@ -318,7 +268,15 @@ class Dino(_PairwiseImageLoss):
         moving = F.interpolate(
             self.warped_moving_image, scale_factor=scale_factor, mode='bilinear').squeeze()
 
-        return_val2 = self.loss(fixed, moving) * self._weight
+        features_fixed = self.feature_extractor.compute_features(fixed)
+        features_warped = self.feature_extractor.compute_features(moving)
+
+        features_fixed = self.feature_extractor.min_max_normalization(
+            features_fixed)
+        features_warped = self.feature_extractor.min_max_normalization(
+            features_warped)
+
+        return_val2 = self.loss(features_fixed, features_warped) * self._weight
 
         return return_val2
 
