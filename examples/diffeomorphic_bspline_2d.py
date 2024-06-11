@@ -82,22 +82,22 @@ def main():
                                                 dtype,
                                                 device)
 
-    regularisation_weight = 1000
-    number_of_iterations = 50
+    regularisation_weight = 1
+    number_of_iterations = 40
 
     sigma = [15, 15]
 
     registration = al.PairwiseRegistration(verbose=True)
 
     # define the transformation
-    # transformation = al.transformation.pairwise.RigidTransformation(
-    # moving_image)
-    transformation = al.transformation.pairwise.BsplineTransformation(moving_image.size,
-                                                                      sigma=sigma,
-                                                                      order=1,
-                                                                      dtype=dtype,
-                                                                      device=device,
-                                                                      diffeomorphic=True)
+    transformation = al.transformation.pairwise.RigidTransformation(
+        moving_image)
+    # transformation = al.transformation.pairwise.BsplineTransformation(moving_image.size,
+    #                                                                   sigma=sigma,
+    #                                                                   order=1,
+    #                                                                   dtype=dtype,
+    #                                                                   device=device,
+    #                                                                   diffeomorphic=True)
 
     registration.set_transformation(transformation)
 
@@ -106,7 +106,7 @@ def main():
     image_loss = al.loss.pairwise.LatentSpaceFeatureLoss(fixed_image,
                                                          moving_image,
                                                          extractor="DINOv2",
-                                                         loss_type="MI")
+                                                         loss_type="CKA")
 
     registration.set_image_loss([image_loss])
 
